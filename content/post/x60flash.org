@@ -1,0 +1,277 @@
+#+title: How to flash coreboot to the thinkpad x60 the proper way
+#+date: 2018-12-01
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+
+* What is so special about the x60 when running vendor bios?
+** Vendor BIOS write protects its bootblock, which means the lowest 64K of the flash can’t be modified
+
+This is a problem since the first code that runs on the CPU comes from there and if we ever want to run coreboot the cpu must start with coreboot code. This write protection is set in the PBR (protect bios range) registers on the southbridge, there is currently no known way to change them back once they are locked by setting the SPI Configuration Lock-Down bit.
+
+#+BEGIN_EXAMPLE
+FLASH (2M)
+    +--------------------+ -> 0x200000
+    |                    |
+    |  bootblock_0       | ---> Only read allowed
+    |                    |
+    +--------------------+ -> 0x1F0000
+    |                    |  ---> Read and write: ok
+    Z                    Z
+    Z                    Z
+    |                    |
+    +--------------------+ -> 0x000000
+#+END_EXAMPLE
+
+** Vendor BIOS prohibits many flash operations
+
+Naturally flash chips have many different operation, for example multiple read, write, erase and ID probe operation. The vendor bios prohibits a lot of those, which is why stock flashrom will fail to work properly.
+* How to solve these issue without needing external or hardware flashing
+** The write protection problem
+
+Luckily the chipset provides a feature called BUC.TS (back up control top swap). In this mode the way the flash gets decoded (read by the cpu) changes. In this mode not the lowest 64K get read by the CPU first but the 64K above those. This is great since we can now put our coreboot bootblock in that 64K region above and that will execute first on the CPU instead of the vendor BIOS bootblock!
+
+This ascii art tries to explain it.
+
+#+BEGIN_EXAMPLE
+    +-------------+ -> 0x200000         +-------------+ -> 0xFFFFFFFF       +-------------+ -> 0xFFFFFFFF
+    |             |                     |             |                     |             |
+    | bootblock_0 |                     | bootblock_0 |                     | bootblock_1 |
+    |             |                     |             |                     |             |
+    +-------------+ -> 0x1F0000         +-------------+ -> 0xFFFF0000       +-------------+ -> 0xFFFF0000
+    |             |                     |             |                     |             |
+    | bootblock_1 |                     | bootblock_1 |                     | bootblock_0 |
+    |             |                     |             |                     |             |
+    +-------------+ -> 0x1E0000         +-------------+ -> 0xFFFE0000       +-------------+ -> 0xFFFE0000
+    |             |                     |             |                     |             |
+    |             |                     |             |                     |             |
+    Z             Z                     Z             Z                     Z             Z
+    Z             Z                     Z             Z                     Z             Z
+    |             |                     |             |                     |             |
+    |             |                     |             |                     |             |
+    FLASH (2M)                          Memory Map BUC.TS=0               Memory Map BUC.TS=1
+#+END_EXAMPLE
+
+** The flash operations restriction
+
+The only real issue will be that the flash cannot be detected with default flashrom ID operation. Luckily the flash has backup operation for probing the ID so we can patch flashrom to use those.
+
+There is some WIP to probe chips with multiple method which would obsolete the hack we need here.
+* Some preparations
+
+Because of all of this some tools will be needed
+** bucts
+
+To swap the BUC.TS bit we will need a tool called buc.ts. Go to the directory where the code is located and build it
+
+#+BEGIN_SRC bash
+cd util/bucts/
+make
+#+END_SRC
+
+** flashrom
+
+Flashrom needs some patching to be able to probe the flashchips and write to them. On the X60 2 different flashchips can occur so we need to patch flashrom for two of these.
+
+First download flashrom (best outside the coreboot tree to keep everything tidy):
+
+#+BEGIN_SRC bash
+    wget https://download.flashrom.org/releases/flashrom-1.1.tar.bz2
+    tar xvf flashrom-1.1.tar.bz2
+#+END_SRC
+
+Go inside the flashrom dir, fetch the patches and apply them:
+
+#+BEGIN_SRC bash
+  cd flashrom
+  wget https://notabug.org/libreboot/libreboot/raw/master/resources/flashrom/patch/lenovobios_sst.diff
+  wget https://notabug.org/libreboot/libreboot/raw/master/resources/flashrom/patch/lenovobios_macronix.diff
+  patch -p0 < lenovobios_sst.diff
+  patch -p0 < lenovobios_macronix.diff
+  make
+#+END_SRC
+
+For reference here are them:
+
+#+BEGIN_SRC diff
+  --- flashchips.c    2014-12-30 01:59:49.846383043 +0000
+  +++ flashchips.c.i945lenovobios_sst 2014-12-30 02:03:51.367580645 +0000
+  @@ -10886,12 +10886,12 @@
+          .name       = "SST25VF016B",
+          .bustype    = BUS_SPI,
+          .manufacture_id = SST_ID,
+  -       .model_id   = SST_SST25VF016B,
+  +       .model_id   = 0x41,
+          .total_size = 2048,
+          .page_size  = 256,
+          .feature_bits   = FEATURE_WRSR_EITHER,
+          .tested     = TEST_OK_PREW,
+  -       .probe      = probe_spi_rdid,
+  +       .probe      = probe_spi_res2,
+          .probe_timing   = TIMING_ZERO,
+          .block_erasers  =
+          {
+  @@ -10914,7 +10914,7 @@
+          },
+          .printlock  = spi_prettyprint_status_register_sst25vf016,
+          .unlock     = spi_disable_blockprotect,
+  -       .write      = spi_aai_write,
+  +       .write      = spi_chip_write_1,
+          .read       = spi_chip_read,
+          .voltage    = {2700, 3600},
+      },
+
+  --- flashchips.c    2014-12-30 01:59:49.846383043 +0000
+  +++ flashchips.c.i945lenovobios_macronix    2014-12-30 02:05:16.060000647 +0000
+  @@ -6605,12 +6605,12 @@
+          .name       = "MX25L1605D/MX25L1608D/MX25L1673E",
+          .bustype    = BUS_SPI,
+          .manufacture_id = MACRONIX_ID,
+  -       .model_id   = MACRONIX_MX25L1605,
+  +       .model_id   = 0x14,
+          .total_size = 2048,
+          .page_size  = 256,
+          .feature_bits   = FEATURE_WRSR_WREN,
+          .tested     = TEST_OK_PREW,
+  -       .probe      = probe_spi_rdid,
+  +       .probe      = probe_spi_res1,
+          .probe_timing   = TIMING_ZERO,
+          .block_erasers  =
+          {
+  @@ -6630,7 +6630,7 @@
+          },
+          .printlock  = spi_prettyprint_status_register_bp3_srwd, /* bit6: Continuously Program (CP) mode */
+          .unlock     = spi_disable_blockprotect,
+  -       .write      = spi_chip_write_256,
+  +       .write      = spi_chip_write_1,
+          .read       = spi_chip_read, /* Fast read (0x0B), dual I/O supported */
+          .voltage    = {2700, 3600},
+      },
+#+END_SRC
+
+Now our flashrom is ready to use (remember to use this patched flashrom build and not the one from your distro).
+** Bootblock
+
+We need a second bootblock at a 64K offset of the bottom.
+
+In the menuconfig select:
+
+#+BEGIN_EXAMPLE
+CONFIG_INTEL_ADD_TOP_SWAP_BOOTBLOCK=y
+#+END_EXAMPLE
+
+and make sure the bootblock size remains to the default 0x10000:
+
+#+BEGIN_EXAMPLE
+CONFIG_INTEL_TOP_SWAP_BOOTBLOCK_SIZE=0x10000
+#+END_EXAMPLE
+
+Coreboot set BILD (BIOS Interface Lock-Down) register, which prevents changes to BUC.TS. Since we only set BUC.TS to flash coreboot once but want to unset it later on we want
+
+#+BEGIN_EXAMPLE
+# CONFIG_INTEL_CHIPSET_LOCKDOWN is not set
+#+END_EXAMPLE
+
+which prevents coreboot from locking down this register.
+
+Now we are ready to build the image which will be covered in the next section.
+* Building the coreboot image
+
+This section assumes you have got the coreboot toolchain built.
+
+Now it’s just a matter selecting some options and compiling the rom we will flash.
+
+The defaults are ok (SeaBIOS with native graphic init) so the only thing we will need to select are the binary repository for microcode select _Allow use of binary-only repository\/(CONFIG_USEBLOBS) in make menuconfig under general the options from the previous section and build it:
+
+#+BEGIN_SRC bash
+make
+#+END_SRC
+
+make sure at the end of the build process you see the following line at the end:
+
+#+BEGIN_EXAMPLE
+bootblock                      0x1dfdc0   bootblock      131072 none
+#+END_EXAMPLE
+
+The bootblock file must be exactly! 0x131072 (128K) large. It contains both the regular and the bucts bootblock.
+* Flashing the coreboot rom
+
+This is the exciting part where we will actually flash coreboot to the motherboard.
+
+So our rom is now inside the coreboot tree sitting at build/coreboot.rom flashrom is in whichever place you downloaded, patched and build flashrom and bucts is under util/bucts/bucts
+
+Let’s get started. First backup the vendor bios in case something goes wrong. For this we need to use our special flashrom:
+
+#+BEGIN_SRC bash
+./path/to/flashrom/flashrom --programmer internal -r backup.rom
+#+END_SRC
+
+We want to be absolutely sure we got a proper backup so let’s verify it against the flash.
+
+#+BEGIN_SRC bash
+./path/to/flashrom/flashrom --programmer internal --verify backup.rom
+#+END_SRC
+
+Now put that backup.rom somewhere safe like on an USB drive.
+
+Now we want to flip BUC.TS
+
+#+BEGIN_SRC bash
+util/bucts/bucts --set
+#+END_SRC
+
+Now the scary/fun part: flashing the actual rom. Because the bottom part of the flash is write protected we want to skip writing to it because that will have flashrom print out some scary messages. To do this we will be using a layout. Create a file, x60_layout with the following content:
+
+#+BEGIN_EXAMPLE
+0x00000000:0x001effff RW
+0x001f0000:0x001fffff RO
+#+END_EXAMPLE
+
+And let’s flash it using this layout
+
+#+BEGIN_SRC bash
+./path/to/flashrom/flashrom --programmer internal --write build/coreboot.rm --layout x60_layout --image RW
+#+END_SRC
+
+Flashrom will try some erase function (that the vendor BIOS prohibits using) but will succeed in the end. Note that it can take some time because slow write operations have have to be used.
+
+One thing you still want to do before rebooting is setting coreboot settings, located in the rtc nvram or cmos to their default values: start in the coreboot tree
+
+#+BEGIN_SRC bash
+cd util/nvramtool
+make
+./nvramtool -y ../../src/mainboard/lenovo/x60/cmos.layout -p ../../src/mainboard/lenovo/x60/cmos.default
+#+END_SRC
+
+And done!
+
+*NOTE: If flashrom complains, then don’t reboot and report to #coreboot chat on freenode irc!*
+
+Well almost. If BUC.TS gets 0 again (which happens if you pull the RTC CMOS ‘yellow’ battery) it will start the vendor bootblock again and we have a brick. So we need to flash coreboot again which is now possible because coreboot does not write protect the flash/bootblock like vendor does it.
+
+So reboot from first flash, assuming flashrom did not complain previous. Simply flash the rom again and we are done (for real now) and set bucts to 0 again:
+
+#+BEGIN_SRC bash
+flashrom -p internal -w build/coreboot.rom
+util/bucts/bucts --unset
+#+END_SRC
+
+*It is really important to set BUC.TS to zero again.* When you build coreboot normally it won’t have a bucts bootblock and will therefore fail to boot (although pulling the cmos battery will do the trick too).
+
+Note that you can use your distro’s flashrom now. When building a new coreboot rom, you now don’t need to select ~CONFIG_INTEL_ADD_TOP_SWAP_BOOTBLOCK=y~ anymore.
+
+*NOTE: you might want to re-flash a new build with ~CONFIG_INTEL_CHIPSET_LOCKDOWN=y~ set since locking down the system is a desirable security feature.*
+
+* TODO
+
+Add this to the coreboot documentation

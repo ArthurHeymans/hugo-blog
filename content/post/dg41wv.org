@@ -1,0 +1,152 @@
+#+title: Porting the Intel DG41WV and Intel 4 series DDR3 raminit to coreboot
+#+date: 2018-11-03
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+This post will explain a bit how the Intel 4 series DDR3 raminit came to be and will introduce a new board that can make use of this code, namely the Intel DG41WV.
+
+* DDR3 raminit
+
+In the past I have worked quite on a bit on the coreboot code that support the Intel 4 series desktop chipset (those chipsets go by the name of G41, G43, G45, Q43, Q45, P41, P43, P45, B43 with each having a somewhat different feature set). In the past I have made quite a few improvements to the coreboot code for this platform:
+
+-    Improve the dram compatibility
+-    Rework how the SPD’s get decoded
+-    Rework the DQS receive enable calibration
+-    Add support for using external graphic devices in the PEG slottart of the dram initialization and it will be the firmware's job to find out good values for those.
+-    Add resume from S3 support
+-    Make properly rebooting possible
+-    Getting variants with the ICH10 southbridge to work
+
+Given the work I did on this and other northbridges/raminit code I was ready for something more challenging and I thought adding DDR3 support would be something nice (previously. DDR3 is quite a different beast however.
+
+* DDR3 fly-by topology
+
+To increase the clock frequency beyond DDR2 frequencies something had to be done to the topology of dram DIMMs. To increase the signal integrity a fly by topology had to be adopted.
+
+The data signals follow a shorter path and come from below, but where the clock signal previously followed a T-branch path and arrived more or less at the same time in the chips, DDR3 technology adopted a fly-by topology. The clock signal arrives at a different time for each data signal pair, DQ (data) and DQS (data strobe).
+Memory controllers naturally can delay some of its signals using DLL's (delay locked loop). The clock signal will generally be fixed at the start of the dram initialization and it will be the firmware's job to find out good values for the delays on the other signal lines. The delays are therefore always delays with respect to this master's clock signal.
+* Write leveling
+
+A first training that is done on DDR3 dimms is called write leveling. This is a special mode of operation on DDR3 dimm's which allow you to sample back the DQS on the DQ signal in order to find a rising edge with respect to the clock:
+
+* Read and Write training
+
+After that you need to adjust the delays such that the skew between DQ and DQS is fine for both read and write operations. The algorithms for these are rather straightforward.
+
+First you start with write training. You sample all delays starting from the DQS delays obtained in the write leveling (the DQ delays are always with respect to the strobe DQS) and save where write start working and start failing. After that you pick the centered value.
+
+#+BEGIN_EXAMPLE
+DQS delay value (start)
+      ^                             middle value
+      |  write to dram              ideal DQ delay     write to dram
+      |  don't read back                  ^            don't read back
+      |         |                         |                  |
+      +----------------------|++++++++++++++++++++++++|-----------
+                                   write to dram
+                                   read back
+#+END_EXAMPLE
+
+Something analogous is done for DQS read delay but instead of trying to write back something you loop over all possible read DQS delays (starting from 0) and try to read back something.
+S3 support and faster boot times
+
+All these trainings are destroy the the dram's content. This is fine if you boot for the first time but when you are trying to resume from S3 (suspend to ram) this is not an option. To keep the ram content in place you need to save the result from those trainings and restore those values when resuming from S3. Previously the RTC nvram (cmos battery backed) was used to store a few things but its size is severely limited (128 bytes) so another non volatile medium was needed. The other easily accessible non volatile medium is the flash chip itself which is usually at least 1MiB large. So what we do is to reserve a small space (64KiB) on that flash where we can store the results of our dram training.
+Typically users don't change DIMM's on their system that often. Fetching information from these DIMM's that the dram controller needs is quite slow (reading a full SPD chips takes at least 50ms for each DIMM depending the protocol used). The SPI flash cache we previously used to save the training results can come in handy here to cache that information too (we only need to check if DIMM's have changed which can be done by just reading the ID bytes on the SPD chip). The end result is that with this cache the boot times are noticeably reduced. On the first boot it takes at least 500ms to initialize the dram but on subsequent boots it only takes ~20ms since everything is cached on a fast medium (SPI flash).
+* Intel DG41WV
+
+The board I chose to develop the DDR3 raminit on was an Intel DG41WV. I chose it for a few reasons:
+
+-    It was cheap
+-    It had a socket (DIP8) spi flash which makes reflashing easy and avoid unexpected electrical difficulties which might require desoldering it.
+-    It has a SuperIO supported by coreboot
+-    It has a serial port
+
+Obviously getting the ram to work was by far the largest part of this port. The board port part is usually really small and with some experience it can usually be done in a few hours. The DG41WV was no different in that aspect. One peculiarity was that the on the VGA output the display was garbled. I had this problem on other boards before and is typically an issue with the default clockgen configuration having a wrong clock frequency for the VGA output. Publicly available documentation for CK505 clockgens is scarce so one solution is to program whatever vendor has set.
+First figure out on which number Linux maps the SMBUS:
+
+#+BEGIN_SRC bash
+modprobe i2c-dev
+i2cdetect -l
+#+END_SRC
+
+The result will look like:
+
+#+BEGIN_EXAMPLE
+i2c-3   i2c             i915 gmbus dpc                          I2C adapter
+i2c-1   i2c             i915 gmbus vga                          I2C adapter
+i2c-8   i2c             DPDDC-D                                 I2C adapter
+i2c-6   i2c             DPDDC-B                                 I2C adapter
+i2c-4   i2c             i915 gmbus dpb                          I2C adapter
+i2c-2   i2c             i915 gmbus panel                        I2C adapter
+i2c-0   i2c             i915 gmbus ssc                          I2C adapter
+i2c-9   smbus           SMBus I801 adapter at 0400              SMBus adapter (this is the one)
+i2c-7   i2c             DPDDC-C                                 I2C adapter
+i2c-5   i2c             i915 gmbus dpd                          I2C adapter
+#+END_EXAMPLE
+
+Now we can read back to ck505 configuration while running vendor firmware using smbus block read operation:
+
+#+BEGIN_SRC bash
+i2cdump -y 9 0x69 s
+#+END_SRC
+
+Now you put this information in the devicetree in coreboot
+
+#+BEGIN_EXAMPLE
+            device pci 1f.3 on      # SMbus
+                subsystemid 0x8086 0x5756
+                    chip drivers/i2c/ck505
+                    register "mask" = "{ 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff }"
+                    register "regs" = "{ 0x41, 0x99, 0xff,
+                         0xff, 0xff, 0x00, 0x00, 0x06,
+                         0x03, 0x65, 0x83, 0x80, 0x15,
+                         0xc0, 0x09, 0x00, 0x00, 0x00,
+                         0x06, 0x00, 0xea }"
+                    device i2c 69 on end
+                end
+            end
+#+END_EXAMPLE
+
+What works on this board?
+
+-    2 x 4GB DDR3 DIMMs (using dual rank DIMMs)
+-    Core 2 CPU's (duo and quad) LGA775 CPU's (including modded LGA771 CPU's)
+-    PCI, PCIe, USB, PS2, Serial
+-    Native graphic init with VGA output
+-    S3 resume
+
+TD;DL how do I use coreboot on the Intel DG41WV
+
+Build a basic but working image with SeaBIOS for this board is really easy.
+Run the following in the coreboot directory:
+
+#+BEGIN_SRC bash
+echo CONFIG_VENDOR_INTEL=y > .config
+echo CONFIG_BOARD_INTEL_DG41WV=y >> .config
+make olddefconfig
+make
+#+END_SRC
+
+Now you can flash this to the flash chip. This can be done internally since the vendor firmware does not lock the SPI flash.
+
+#+BEGIN_SRC bash
+flashrom -p internal -w build/coreboot.rom
+#+END_SRC
+
+Feel free to ask any questions!
+* UPDATE
+
+This board broke on me. Luckily I have equivalent board from other vendors.

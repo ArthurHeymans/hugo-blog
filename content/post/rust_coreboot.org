@@ -1,0 +1,242 @@
+#+title: Integrating rust in coreboot: baby steps
+#+date: 2023-08-01
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+* Rust in coreboot?
+#+CAPTION: It's 2023
+#+ATTR_HTML: :class center no-border :width 70% :height 70%
+
+Rust is a programming language with emphasis on performance, type safety and concurrency.
+It enforces memory safety at compile time. Unlike the C standard which is a 700+ page document,
+with a *LOT* of documented undefined behavior, rust has *no* undefined behavior unless the unsafe
+keyword is used. Zero cost abstractions make rust binaries very efficient in both size and
+execution, in places where C will have a hard time to be optimized (e.g. function pointers in structs).
+
+When you're used to C tooling, the rust tooling is beyond any comparison:
+- the compiler *rustc* is very good at telling you what to do when something is wrong. Compare that to ~GCC~ that craps out 100 error messages if you forget a semicolon
+- *cargo* is the package manager and build tool: using some cool code you found on the web is a bliss
+- *rustfmt*: no endless discussion on how code should be formatted (max char count per line, where to place {}, comments, order of inclusion of crates/headers, ...)
+- *clippy*: linter against common mistakes, write idiomatic rust like a pro
+
+It's just too easy!
+
+All these things make rust very suited for firmware development.
+See [[https://docs.rust-embedded.org/book/]] on how rust can shine as a bare metal language.
+
+Linux is already integrating rust, coreboot which up until now is is mostly C, some assembly, with ADA/SPARK for Intel graphic init, should not lag behind!
+#+CAPTION: It's 2023!
+#+ATTR_HTML: :class center no-border :width 85% :height 85%
+[[/rust_safe.png]]
+
+* First attempt
+
+This will describe how I wrote rust code and linked it with the existing C coreboot code.
+The end result: C can call rust code and rust can call C code: We call a function in rust
+that calls coreboots printk to print something on the console.
+
+** Getting started: a static library (.a)
+
+Rust provides a few [[https://doc.rust-lang.org/reference/linkage.html][output/linker]] options: bin, lib, dynlib, staticlib.
+Coreboot is able to link static libraries ~.a~ files, so we need to instruct cargo to do that.
+Add the following to the ~Cargo.toml~:
+
+#+BEGIN_SRC toml
+      [lib]
+      crate-type = ["staticlib"]
+#+END_SRC
+
+** Calling C from rust: bindgen
+
+[[https://docs.rust-embedded.org/book/interoperability/c-with-rust.html][To call C code from rust]] you need to create some bindings. E.g.:
+#+BEGIN_SRC rust
+  extern "C" {
+      pub fn cool_function(
+          i: cty::c_int,
+          c: cty::c_char,
+          cs: *mut CoolStruct
+      );
+  }
+#+END_SRC
+Doing this manually for all the functions in C we want to call could be a lot of work. Luckily a tool exists
+than can parse C headers into rust code we need: [[https://github.com/rust-lang/rust-bindgen][bindgen]]. Normally you set up bindgen in the [[https://doc.rust-lang.org/cargo/reference/build-scripts.html][build.rs]] to output
+the bindings, but for testing purposes I used to CLI version.
+I want to call printk to see my rust code executing, so I use bingen on ~console.h~ and include enough CPP args to make it work.
+#+BEGIN_SRC bash
+   bindgen --use-core --with-derive-default --ctypes-prefix core::ffi src/include/console/console.h \
+           -- -Isrc/commonlib/include -Isrc/include -Isrc/commonlib/bsd/include -include src/include/kconfig.h -Ibuild -DENV_RAMSTAGE=1
+#+END_SRC
+
+** Calling rust from C
+
+Now that we have our automatically generated C bindings in place we can implement a function that calls it.
+#+BEGIN_SRC rust
+  #[no_mangle]
+  pub extern "C" fn hello_rust() {
+      let string: &[u8] = b"Hello, world in rust!\n\0";
+      unsafe {
+          bindgen::printk(
+              bindgen::BIOS_INFO.try_into().unwrap(),
+              string.as_ptr().cast(),
+          );
+      }
+  }
+#+END_SRC
+
+~#[no_mangle]~ has the compiler generate symbols without mangling their names.
+That way the linker can find the symbol by name and C code can call it.
+
+Next we need to include the ~.a~ file and call our ~hello_rust~ function.
+Simply move the ~.a~ file in the q35 mainboard directory and add the following to the Makefile.inc.
+
+#+BEGIN_SRC Makefile
+  all-y += libcoreboot_rs.a
+#+END_SRC
+
+Next add a function call in C code in the ramstage (~mainboard.c~):
+#+BEGIN_SRC
+ 	void hello_rust(void);
+	printk(BIOS_ERR, "Calling Rust code\n");
+	hello_rust();
+	printk(BIOS_ERR, "Called Rust code\n");
+#+END_SRC
+
+** Panic!!
+
+Let's skip that for now. Add the following to ~Cargo.toml~
+
+#+BEGIN_SRC toml
+      [profile.dev]
+      panic = "abort"
+#+END_SRC
+
+
+** Compatible compiler target
+
+Now the linker will complain: our code is compiled for userspace.
+There are a lot of symbols not found, since coreboot is not a userspace program.
+
+We need to use a different target for bare metal rust. Looking at the [[https://doc.rust-lang.org/rustc/platform-support.html][support]] page
+it looks like ~x86_64-unknown-none~ would a good target for bare metal x86 which implies for now
+that I need to use 64bit coreboot (no such target for 32bit).
+
+You can set the target the following way:
+#+BEGIN_SRC
+  cargo build --target x86_64-unknown-none
+#+END_SRC
+
+This still results in the linker complaining about using illegal linker symbol relocation types: Type 9 and type 11.
+According to the AMD64 ABI [[https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.95.pdf][documentation]] those are ~R_X86_64_GOTPCREL~ and ~R_X86_64_32S~.
+~GOTPCREL~ generally means we're trying to generate position independent code.
+~32S~ means we're using the wrong memory model.
+
+To fix that we need to define a new target that has those compiler options correctly set.
+New targets are added using [[https://doc.rust-lang.org/rustc/targets/custom.html][json files]] and used by referencing that json file with that ~--target~ cargo option.
+
+After messing around I settled on the following which linked with coreboot.
+#+BEGIN_SRC json
+  {
+    "llvm-target": "x86_64-unknown-none",
+    "target-endian": "little",
+    "target-pointer-width": "64",
+    "target-c-int-width": "32",
+    "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+    "arch": "x86_64",
+    "os": "none",
+    "env": "",
+    "vendor": "unknown",
+    "linker-flavor": "gcc",
+    "target-family": "oreboot",
+    "pre-link-args": {
+        "gcc": ["-m64", "-nostdlib", "-static"]
+    },
+    "features": "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-3dnowa,-avx,-avx2,+soft-float",
+    "dynamic-linking": false,
+    "executables": false,
+    "relocation-model": "static",
+    "code-model": "large",
+    "disable-redzone": true,
+    "eliminate-frame-pointer": false,
+    "exe-suffix": "",
+    "has-rpath": false,
+    "no-compiler-rt": true,
+    "no-default-libraries": true,
+    "position-independent-executables": false,
+    "has-elf-tls": true
+}
+#+END_SRC
+
+After some digging on stackoverflow I managed to get the same thing working for 32bit, even though 32bit x86 bare metal is not officially supported:
+#+BEGIN_SRC json
+  {
+      "llvm-target": "i686-unknown-none",
+      "data-layout": "e-m:e-i32:32-f80:128-n8:16:32-S128-p:32:32",
+      "arch": "x86",
+      "target-endian": "little",
+      "target-pointer-width": "32",
+      "target-c-int-width": "32",
+      "os": "none",
+      "dynamic-linking": false,
+      "relocation-model": "static",
+        "executables": false,
+      "linker-flavor": "ld.lld",
+      "linker": "rust-lld",
+      "panic-strategy": "abort",
+      "disable-redzone": true,
+      "features": "+soft-float,-sse"
+  }
+#+END_SRC
+
+As we use custom targets we need to recompile rust core libraries:
+#+BEGIN_SRC bash
+  cargo build --release --target i686-unkown-none-coreboot.json -Zbuild-std=core,alloc
+#+END_SRC
+
+* What is next?
+** Panic handler
+
+Not much to say. It's worth implementing a real one :-)
+
+** Port Linux printk
+
+The way Linux integrated rust to print on the same console is the following.
+In the printk implementation there is a special format specifier ~%pA~ which is handled by
+calling rust code. To print things on the console Linux implements rust print functions
+that call printk using that format specifier. This way the powerful rust formatting can be used.
+
+** Hook up build system cleanly
+
+- Hook up ~bingen~ to ~build.rs~ to properly generate buildings.
+- Add a makefile target to generate the archive by calling cargo with the proper json target file.
+
+* What to (re)implement in rust?
+#+CAPTION: The urge to rewrite things in rust is strong
+#+ATTR_HTML: :class center no-border :width 40% :height 40%
+[[/rewrite_rust.png]]
+
+So this blog post demonstrated that integrating rust code with C is not hard.
+It's also very easy to replace parts of existing C code with rust seamlessly.
+It was a design goal of rust after all. Now the question remains: what should be
+written in rust inside the coreboot tree? I don't have a good answer to that question.
+
+** SMI handler
+This is the only runtime that coreboot leaves behind.
+Given how security critical SMM code is (gaining code execution of SMM allows
+to bypass any security mechanism the OS has in place without anyone noticing),
+this seems like a good place to start.
+
+Coreboot's C smihandler code is pretty slim compared to UEFI, which reduces the attack
+surface. It still remains a nasty place for bugs and they are bound to exist with C code.
+The small size of the smihandler also makes it a realistic target for a rust rewrite.
+
+* What would you want to be rewritten in rust?

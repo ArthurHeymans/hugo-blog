@@ -1,0 +1,16 @@
+#+title: About this blog
+#+date: 2024-02-24T09:29:00+01:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: true
+
+Hi I'm Arthur. I do a lot of firmware hacking professionally and in my spare time. My interests are very wide.

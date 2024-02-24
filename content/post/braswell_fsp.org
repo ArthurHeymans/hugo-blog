@@ -1,0 +1,50 @@
+#+title: FSP1.1 Braswell TempRaminit problems
+#+date: 2019-11-23
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+
+Coreboot is migrating platforms from a romcc bootblock to ~C_ENVIRONMENT_BOOTBLOCK~ in which Cache-as-Ram is set up in the bootblock.
+When migrating Braswell, chromebooks featuring this SOC did not boot anymore while other boards did. Google uses a different FSP binary than the one present in the Intel Github FSP repository.
+
+Previously the romcc bootblock set up caching of the ROM, located microcodes and performed the update before calling FSP TempRaminit.
+
+Given that you pass on a pointer and a size of the microcode updates to the FSP TempRaminit the assumption was made that loading microcode updates before loading FSP was not needed.
+This assumption was correct for the public FSP release.
+
+The google FSP contains a bug however. Let's see what is going on.
+
+Often your system can feature multiple CPU revisions and including different microcode for these revision is needed. Intel microcode updates have a simple format. They have a header specifying the CPU target + the size and a data section holding the actual update. What is done is to append microcode updates to each other in one file and loop through them until the correct one is found.
+
+The FSP does the following:
+
+-    Loop through microcode
+-    Check for revision, flags, ...
+-    If a match is found, check if it is not the same revision as currently installed (it should check for > current revision!)
+-    go the the next one by parsing the header for the size
+-    When the end is reached, check for the current installed revision. If it's 0 bail out (and reboot!)
+
+The bug of the Google FSP release lies in incrementing the register holding the microcode address.
+At some point the intend is to increment it with 0x14 and compare the revision to the CPUID.
+Instead of incrementing it with ~$0x14~, it increments it to ~0x14~.
+This means that not 0x14 is additioned but whatever the content of address 0x14 holds, which is unkown since memory is not initialized at this point.
+
+So what happens is that the Google FSP binary cannot load the update microcode if the first microcode is not a match, which will have the FSP fail and reboot (loop).
+
+The Intel FSP release has this bug fixed.
+
+#+ATTR_HTML: :class center no-border
+#+CAPTION: The google FSP version for Braswell has a bug in the microcode updater
+[[/brasswell_fsp_problem.png]]
+
+Given the nature of the microcode update mechanism of the FSP and the check it does at the end. The best solution seems to be to provide the FSP with a fake MCU and do the updating ourselves before FSP is called. This reduces dependency on FSP doing the right thing (which in this case it clearly doesn't) and also removes the need to specifiy the MCU location at build-time.

@@ -1,0 +1,194 @@
+#+title: Hardware assisted root of trust mechanism and coreboot internals
+#+date: 2021-05-26
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+[[/roots.jpg]]
+
+This blog enty first appeared on the 9esec [[https://9esec.io/blog/hardware-assisted-root-of-trust-mechanism-and-coreboot-internals][blog]].
+
+I started working for 9elements in October 2020 and my first assignment was to get Intel CBnT working on the OCP Deltalake using coreboot firmware.
+Intel Converged Bootguard and TXT is a hardware assisted method to set up a root of trust.
+In this blog post I will discuss some of the changes needed in coreboot to get this working.
+Setting CBnT up properly was definitely a challenge, but the work did not stop there.
+So while Intel CBnT provides a method to verify or measure the initial start-up code, it is not enough.
+You want to trust the code you run from start, the reset vector, to end, typically a bootloader.
+CBnT only takes care of the start. You have to make sure that each software component trusts the assets it uses and the next program it loads.
+This concept is called a chain of trust. Now in 2021 I have an assignment that involves supporting the older Intel Bootguard technology.
+Since Bootguard is very similar to CBnT, I'll also touch on that.
+
+* Intel Converged Bootguard and TXT: a root of trust
+Intel CBnT merges the functionality provided by TXT and BtG in one Authenticated
+Code Module (ACM). This is a code module signed by Intel that runs on the main
+CPU before the traditional x86 reset vector is run at address 0xFFFFFFF0. The
+job of this ACM is to measure and/or verify the main firmware, depending on the
+'profile' that has been set up in the Intel Management Engine (ME). The profile
+determines what happens in case of a measurement of verification error. Strong
+policies entirely halt the system in case of failure, while other ones just
+report errors but still continue booting. The latter is often desirable for
+servers in a hyperscaler setup such that the system admin can still run
+diagnostics on the system.
+
+A few different components are needed in a working CBnT setup. The ACM was
+already mentioned. The ACM is found by the hardware by a pointer in the Intel
+Firmware Interface Table (FIT), which itself is found via a pointer at the fixed
+location 0xFFFFFFC0. Other necessary components are the Key Manifest (KM) and
+Boot Policy Manifest (BPM), which are also found in the FIT. The chain of trust
+is started in the following way: the Intel ME has a fuse which holds the hash of
+the public key of the KM. This can either be set up with 'fake-fusing' for
+testing CBnT where the hash can still be changed afterwards. On production
+systems the hash will be permanently fused. The ACM compares that fused hash to
+the public key that is inside the KM, which is signed with the KM private key.
+The KM itself holds a hash of the BPM public key which is compared to the public
+key stored in the BPM. The BPM is signed with the BPM private key. The role of
+the BPM is to define what segments of the firmware are Initial Bootblock (IBB).
+The BPM contains a digest of the IBBs and as such establishes a root of trust if
+the digest in the BPM matches what is on the flash. More in depth info on this
+in [[https://edk2-docs.gitbook.io/understanding-the-uefi-secure-boot-chain/secure_boot_chain_in_uefi/intel_boot_guard][intel boot guard]]. This is what Bootguard also did. What CBnT offers on top is
+the TXT functionality. The IBBs are measured into PCR0 of the TPM. Other TXT
+functionality like clearing memory or locking down the platform before setting
+up DRTM with the SINIT ACM is also provided by the CBnT ACM. See the [[https://trustedcomputinggroup.org/wp-content/uploads/DRTM-Specification-Overview_June2013.pdf][TCG DRTM]]
+for more info on this. Merging the TXT functionality makes CBnT ACMs much bigger
+than BtG ACMs (256K vs 32K depending on the platform).
+
+This KM and BPM separation has in mind that there is one hardware owner, but
+multiple OEMs. The hardware then always gets fused with the key of the owner.
+Each OEM might want to roll their own firmware and has it's own BPM key. The
+owner then creates a KM with the OEMs BPM key hash inside it. The OEM can then
+generate their own BPM that matches the firmware they intend to use. KM and BPM
+also provide security version numbers that can be enforced. So the same hardware
+can have different OEMs during its lifetime. The previous OEM won't be able to
+generate a working CBnT image for the new OEM.
+
+The strength of a CBnT setup and the trustworthiness it provides lies in the following things:
+
+-    the signature verification of the ACM done by the ME/Microcode (Intel)
+-    ACM signing key remaining private (Intel)
+-    the verification done by the ACM, which is a closed binary (it's 256K so not so small)
+-    KM keys remaining private (Manufacturer)
+-    OEM keys remaining private (OEM), KM security version number can be updated to make OEM keys obsolete though
+-    The IBB needs continue the chain of trust which is what the next section will be about
+
+* Chain of trust
+Coreboot essentially supports 2 different methods for setting up a chain of
+trust. You have measured boot and verified boot. Verified boot is conceptually
+easier grasp. Each software component that is run after the bootblock is signed
+with a private key. The trusted bootblock has the corresponding public key and
+uses that to verify the integrity of the next program. If the signature does not
+match the binary then the firmware can report an error to let the user know that
+their system cannot be trusted or the boot process can even be fully halted if
+that is desired.
+
+Securing your firmware using measured boot works a bit differently and involves
+a TPM. The idea with measured boot is that before a component is used, it is
+digested and the hash is stored in the extend-only PCR registers of the TPM.
+When the boot process is done, the user reads out the TPM and if the PCRs don't
+match with what you expect, you know that the firmware has been tampered with. A
+common use case is where the TPM can be read out remotely independent from the
+host. If the TPM PCR values don't match, that system won't be allowed access to
+the main network. The admin can then take a look at that system, fix potential
+issues and allow that system back online after those have been resolved.
+
+Historically Google first added verified boot to coreboot with their VBOOT
+implementation. Measured boot was later added as an optional feature to VBOOT.
+Now measured boot can be used independently from Google's VBOOT. Google's VBOOT
+was built with ChromeOS devices in mind. Those devices use very varying
+hardware: different SOCs from Intel, AMD and many ARM SOC vendors. To support
+all those different SOCs Google uses a common flash based root of trust. The
+root of trust lies in a read only region of the flash which is a feature of some
+SPI flash which is kept in place by holding the /WP pin low. The verification
+mechanism resides in the read only region and verifies the firmware in
+'FW_MAIN_A/B' FMAP partitions. The RO region of the flash does hold a full
+firmware for recovery. This copy of the firmware is also considered trusted.
+Such a VBOOT setup does not work that well with a root of trust method like
+CBnT/Bootguard. With Bootguard some initial parts of the firmware are marked as
+IBB and the ACM will verify those. It's up to the firmware and assets in those
+IBB to continue the chain of trust and verify the next components that will be
+loaded. A fully trusted recovery image in 'RO' region would need to be marked as
+IBB. CBnT/Bootguard were however not designed for that, as the IBBs are then too
+big. Only code that is required to set up a chain of trust ought to be marked as
+IBB, not a full firmware in 'RO' region. In more practical terms, if the
+bootblock is marked as IBB with Bootguard, the romstage that comes after it
+cannot be a romstage in the in 'RO' FMAP region as there is no verification on
+it. VBOOT needs to be modified to only load things from FW_MAIN_A/B. Just not
+populating the RO FMAP with a romstage is not sufficient. An attacker could just
+take a working Bootguard image and manually add a romstage in the RO cbfs. The
+solution is to disable the option for a full recovery bootpath in VBOOT.
+
+A note about the future: some work is being done to have per cbfs file
+verification. This would fit the Bootguard use case much better as it removes
+the need to be careful about what cannot be in the VBOOT RO region.
+
+​Another difficulty lies in what to mark as IBB. An obvious one is the bootblock
+as that code gets executed 'first' (well after the ACM has run). But the
+bootblock accesses other assets, typically quite early in the bootflow. The CPU
+starts in a bare state: there is no RAM! A solution is to use CPU cache as RAM.
+This setup is rather tricky and the details are not always public. So sometimes
+you are obliged to use Intel's FSP-T to set up an environment in which you can
+execute C code. Calling FSP-T therefore happens in assembly and for this reason
+verification on the FSP-T binary cannot happen this early. Even finding FSP-T
+causes problems! FSP-T is a cbfs file and to find cbfs files you have to walk
+from bottom to top until you find the proper file. This is prone to attacks:
+someone can modify the image/cbfs such that other non trusted code gets run
+instead. The solution is to place FSP-T at an address you know at buildtime
+which the bootblock code jumps to. FSP-T also needs trusted so it has to be
+marked as IBB and verified by the ACM.
+
+Ok, now we are in a C environment but we’re are not there yet. We need to set
+things up such that we can verify the next parts of the boot process. For that
+we need the public key which lies in the "GBB" fmap partition. FMAP partitions
+are found via the "FMAP" fmap partition whose location is known at buildtime. So
+again both "FMAP" "GBB" need to be marked as IBB, to be verified by the ACM.
+
+With VBOOT there is the option to do the verification in a separate stage,
+verstage. Same problem here too: it's a cbfs file which can only be found at
+runtime. Here the solution is to link most of the verstage code inside the
+bootblock. As it turns out this is even a good idea for most x86 platforms using
+a Google VBOOT setup. You have one stage less so less code duplication. It saves
+some space and is likely a tiny bit faster as less flash needs to be accessed
+which is a slow operation.
+
+Other things are done in the bootblock like setting up a console. The verbosity
+of the console is sometimes fetched with board specific methods relying other
+parts of the flash. So again this needs to be fetched at a location known at
+buildtime and marked as an IBB or simply avoided or done later in the
+bootprocess.
+
+So the conclusion is that all assets that are used before the chain of trust
+setup code is run (VBOOT setup or measured boot TPM setup) need to be referenced
+statically, searching for them cannot be done and they need to marked as IBB
+with Bootguard.
+
+* Converged security suite
+CSS is an open source project maintained by 9elements. It is written in go,
+which makes it quite portable. It's a set of tools and libraries related to
+firmware and firmware security. One such tool is cbnt-prov. It is integrated in
+the coreboot buildsystem and can properly set things up for Intel CBnT, by
+generating a KM and BPM. It parses a coreboot image and detects what segments
+need to be marked as IBB automatically. It is however not just a coreboot
+specific tool to glue things together for CBnT. It supports dumping information
+on the CBnT setup for generic UEFI images too. It can take an existing setup,
+turn it into a configuration file, which can be reused later on, for instance if
+you want to deploy the same firmware but with different keys. One last important
+feature is to be able to do validation on an existing image.
+
+We are working hard on an equivalent tool for bootguard that will be called
+bg-prov. We hope to get this ready for production soon.
+
+​This is a big step forward in the usability of coreboot as previously you were
+bound to proprietary tools provided by Intel that were only accessible under NDA
+and has usability issues as they are Microsoft Windows executables. Coreboot is
+the best open source X86 firmware at this day and having fully free and open
+source software to cover the common use case of Intel Bootguard and CBnT makes
+coreboot a more attractive firmware solution. We hope that this improves its
+market adoption!
