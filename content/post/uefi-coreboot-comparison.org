@@ -73,40 +73,52 @@ Along with these firmware specific differences there is also the generic argumen
 * Part 4: Does the OS need UEFI boottime and runtime services?
 On x86 Linux does not need any UEFI boot time or runtime services, nor is any functionality lost when those are not provided. Linux can be given all the information it needs (ACPI/SMBIOS/E820/framebuffer) via other means. On other architectures like ARM64 the UEFI system table and some minimal runtime services are required. However this requirement is not the same as needing a fully fledged EDk2 UEFI implementation and very minimal implementations exist too, that provide as little as needed UEFI services. ARM LBBR fleshed out these minimum requirements into a spec.
 * Summary
-  Based on the facts presented in the article, it can be concluded that open
-  source host firmware solutions like coreboot + LinuxBoot offer several
-  advantages over closed source UEFI firmware.
+Based on the facts presented in the article, it can be concluded that open
+source host firmware solutions like coreboot + LinuxBoot offer several
+advantages over closed source UEFI firmware.
 
-  In terms of performance and security, LinuxBoot and coreboot outperform UEFI
-  DXE. The Linux kernel used in LinuxBoot is highly tested and under constant
-  scrutiny, reducing the likelihood of encountering issues. Additionally, the
-  use of Linux as the bootloader reduces development time and allows for more
-  flexibility in writing applications, as Linux applications can be written in
-  any modern language.
+In terms of performance and security, LinuxBoot and coreboot outperform UEFI
+DXE. The Linux kernel used in LinuxBoot is highly tested and under constant
+scrutiny, reducing the likelihood of encountering issues. Additionally, the
+use of Linux as the bootloader reduces development time and allows for more
+flexibility in writing applications, as Linux applications can be written in
+any modern language.
 
-  Moreover, LinuxBoot and coreboot result in faster boot times compared to
-  UEFI, as the Linux boot process is better parallelized and has smarter
-  dependency resolution. The reduced number of programs used in these
-  solutions also makes maintenance of security updates more manageable.
+Moreover, LinuxBoot and coreboot result in faster boot times compared to
+UEFI, as the Linux boot process is better parallelized and has smarter
+dependency resolution. The reduced number of programs used in these
+solutions also makes maintenance of security updates more manageable.
 
-  From a development standpoint, LinuxBoot and coreboot offer simplified and
-  more efficient development models. All code is developed in one tree or
-  codebase, allowing for code reuse and reducing maintenance and validation
-  efforts across different boards and systems. This also leads to faster
-  development and deployment of updates. In contrast, UEFI requires copying
-  and modifying the codebase for each generation and board, resulting in
-  higher development and maintenance costs.
+From a development standpoint, LinuxBoot and coreboot offer simplified and
+more efficient development models. All code is developed in one tree or
+codebase, allowing for code reuse and reducing maintenance and validation
+efforts across different boards and systems. This also leads to faster
+development and deployment of updates. In contrast, UEFI requires copying
+and modifying the codebase for each generation and board, resulting in
+higher development and maintenance costs.
 
-  The monolithic runtime  design of Linux and coreboot also provides advantages over
-  the modular design of UEFI. The reduced code size of coreboot and the
-  ability to optimize at build time result in faster execution time, reduced
-  attack surface, and faster development. UEFI, on the other hand, often
-  includes unnecessary modules, leading to larger and potentially more
-  vulnerable firmware.
+The monolithic runtime design of Linux and coreboot also provides advantages over
+the modular design of UEFI. The reduced code size of coreboot and the
+ability to optimize at build time result in faster execution time, reduced
+attack surface, and faster development. UEFI, on the other hand, often
+includes unnecessary modules, leading to larger and potentially more
+vulnerable firmware.
 
-  In conclusion, the comparison between UEFI and coreboot + LinuxBoot
-  demonstrates that open source host firmware solutions offer better
-  performance, security, and development models. The use of Linux as the
-  bootloader, coupled with coreboot, simplifies the firmware process and
-  provides more flexibility and efficiency. These advantages make open source
-  solutions like coreboot + LinuxBoot a viable alternative to UEFI firmware.
+In conclusion, the comparison between UEFI and coreboot + LinuxBoot
+demonstrates that open source host firmware solutions offer better
+performance, security, and development models. The use of Linux as the
+bootloader, coupled with coreboot, simplifies the firmware process and
+provides more flexibility and efficiency. These advantages make open source
+solutions like coreboot + LinuxBoot a viable alternative to UEFI firmware.
+
+* Bibliography
+
+1. LinuxBoot Project. Available online: https://www.linuxboot.org (accessed on 2024-02-28).
+2. Coreboot Project. Available online: https://www.coreboot.org (accessed on 2024-02-28).
+3. "UEFI PI Specification 1.8". 2024. The Unified Extensible Firmware Interface (UEFI) Forum. Available online: https://uefi.org (accessed on 2024-02-28).
+4. U-root Project. Available online: https://u-root.org (accessed on 2024-02-28).
+5. Intel FSP. Available online: https://www.intel.com/FSP (accessed on 2024-02-28).
+6. AMD OpenSIL Project. Available online: https://www.amd.com/OpenSIL (accessed on 2024-02-28).
+7. NERF Project. Available online: https://trmm.net/NERF/ (accessed on 2024-02-28).
+8. ARM LBBR. Available online: https://developer.arm.com/documentation/little-kernel-boot-loader (accessed on 2024-02-28).
+9. "Contributors statistics". 2024. EDK2, coreboot and Linux GitHub repositories. Available online: https://github.com (accessed on 2024-02-28).
