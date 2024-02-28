@@ -11,7 +11,7 @@
 #+math: false
 #+slider: false
 #+private: false
-#+draft: true
+#+draft: false
 
 This whitepaper will make the case that UEFI firmware and more specifically EDK2 based solutions, be it open or the more ubiquitous closed ones, are hurting business by driving up cost, delaying time to market, while at the same time are the cause of more security problems. This whitepaper will contrast this UEFI status quo with other existing solutions like LinuxBoot in combination with coreboot, which fully embrace open source development, are scoring better on all those metrics. This is both due to design decisions and the related development models.
 
