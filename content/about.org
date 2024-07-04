@@ -13,4 +13,18 @@
 #+private: false
 #+draft: false
 
-Hi I'm Arthur. I do a lot of firmware hacking both professionally and in my spare time. My interests are very wide.
+Hi I'm Arthur. I do a lot of firmware hacking both professionally and in my spare time.
+My interests are very wide. Here is a non exclusive list:
+- embedded software
+- electronics
+- physics
+- chemistry
+- pharmacology
+- philosophy
+- religion
+- psychology
+- biology
+- fitness
+- bright and colorful decoration using LEDs and lasers
+- car and motorcycle mechanics
+- science fiction & fantasy
