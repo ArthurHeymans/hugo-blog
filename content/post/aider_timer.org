@@ -1,0 +1,34 @@
+#+title: rtimer: Writing a Timer with Aider
+#+date: 2024-10-21
+#+lastmod: 2021-09-28
+#+categories[]:
+#+tags[]:
+#+images[]:
+#+keyphrase:
+#+description:
+#+seotitle:
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+
+* Aider + Claude Sonnet 3.5
+
+This morning, I needed a timer to spend only 10 minutes reading a book. I searched for CLI tools but couldn't find anything immediately that suited my needs due to laziness. So, I decided to write one myself with the help of AI.
+
+Using Aider coupled with Claude Sonnet 3.5, I was able to get something working on the first try. Afterward, I added a few features:
+- Display an ASCII art clock
+- Add libnotify support
+- Show remaining and elapsed time
+- Indicate when it was launched and when it will end
+
+In total, it took about one hour. Occasionally, there were compilation errors, but inputting the error output in the tool had Claude fix them immediately.
+
+I think this is pretty cool because writing it myself would probably take a whole day or so.
+
+You can find the endresult [[https://github.com/ArthurHeymans/rtimer][here]].
+
+* Future Ideas?
+A client-server architecture where multiple notifications can be scheduled remotely.
