@@ -1,0 +1,172 @@
+#+title: Using LLMs in emacs
+#+date: 2024-11-06T08:34:52+01:00
+#+lastmod: 2021-09-28
+#+categories[]: emacs llm
+#+tags[]: emacs llm
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+
+This post will review 2 llm options in emacs how I set them up.
+
+* Ellama
+
+#+BEGIN_EXPORT html
+<video width=100% controls autoplay>
+    <source src="/ellama.webm" type="video/webm">
+    Your browser does not support the video tag.
+</video>
+#+END_EXPORT
+
+From [[https://github.com/s-kostyaev/ellama][ellama]]
+#+begin_quote
+Ellama is a tool for interacting with large language models from Emacs. It allows you to ask questions and receive responses from the LLMs. Ellama can perform various tasks such as translation, code review, summarization, enhancing grammar/spelling or wording and more through the Emacs interface. Ellama natively supports streaming output, making it effortless to use with your preferred text editor.
+
+The name “ellama” is derived from “Emacs Large LAnguage Model Assistant”. Previous sentence was written by Ellama itself.
+#+end_quote
+
+Ellama empowers me to leverage Large Language Models (LLMs) for diverse purposes, including correcting grammar mistakes, enhancing wording, answering general questions, and writing or editing code, all within a unified package suite.
+
+A notable feature is the ability to augment the context with files or selected text when posing questions, further enriching the inquiry process.
+
+Overall, I hold Ellama in high regard, relying on it approximately 90% of the time for my LLM needs. A significant advantage is its facilitation of seamless model switching, allowing effortless utilization of multiple models.
+
+One aspect where Ellama falls slightly short of my expectations is in replicating a conversational experience, an area where GPTel exhibits more prowess. A conversations continuum requires re-invoking the ~ellama-chat~ interface.
+
+Initially, Ellama's support was limited to locally hosted models via the Ollama API. However, with its transition to utilizing the LLM Emacs package, it now also supports OpenAI-compatible APIs, a standard nearly universally adopted across providers.
+
+** Ellama with doom emacs
+By default ellama saved its sessions into my ~.doom.d/~ folder. [[https://github.com/doomemacs/doomemacs][Doom emacs]] uses a variant of org mode for documentation in there which made emacs hang when ellama was used.
+The solution is to place configure ~ellama-sessions-directory~ some place else like
+#+begin_src elisp
+(setq ellama-sessions-directory "~/.emacs.d/.local/cache/ellama-sessions")
+#+end_src
+
+
+
+* gptel
+
+#+BEGIN_EXPORT html
+<video width=100% controls autoplay>
+    <source src="/gptel.webm" type="video/webm">
+    Your browser does not support the video tag.
+</video>
+#+END_EXPORT
+
+From [[https://github.com/karthink/gptel][gptel]]
+#+begin_quote
+gptel is a simple Large Language Model chat client for Emacs, with support for multiple models and backends. It works in the spirit of Emacs, available at any time and uniformly in any buffer.
+#+end_quote
+
+Unlike ellama which leverages the llm emacs package behind the screen, gptel has its own backend code for talking to multiple llm providers.
+gptel functionality is much more reduced compared to gptel. It's just provides a chat interface to llms. However it does feel more like a real chat than ellama.
+gptel does feature a menu to change the instructions, context, providers, input and output parameters of the requests.
+It works well, but I feel that this menu to do things integrates less well into my workflow.
+
+I also like changing llm providers often and out of the box gptel's menu makes that a few more steps.
+
+* Adding all Openrouter and ellama models to gptel and ellama
+
+As already mentioned, I like playing with multiple LLMs. [[https://openrouter.ai/][Openrouter]] provides access to a lot of different models.
+I want to have access to all off them in emacs.
+Neither gptel, nor ellama can access all off them by default, so I had ellama write me some code to achieve his.
+
+** Ellama with openrouter models
+
+First we need to get a list of the models names and id from openrouter.
+Openrouter has an api for that via [[https://openrouter.ai/api/v1/models]]
+
+This is the elisp code to get those in a pair of ~name~ and ~id~
+#+begin_src elisp
+(require 'json)
+(require 'url)
+(defun fetch-openrouter-models ()
+  (with-current-buffer
+      (url-retrieve-synchronously "https://openrouter.ai/api/v1/models")
+    (goto-char url-http-end-of-headers)
+    (let* ((json-object-type 'alist)
+           (json-data (json-read))
+           (models (alist-get 'data json-data)))
+      (mapcar (lambda (model)
+                (cons (alist-get 'name model)
+                      (alist-get 'id model)))
+              models))))
+#+end_src
+
+Adding external llm providers looks like this (get-auth-info is a helper to get the API key from ~.authinfo.gpg~)
+#+begin_src  elisp
+(setq ellama-providers
+      '(("deepseek-chat" . (make-llm-openai-compatible
+                    :key (get-auth-info
+                          :host "api.deepseek.com"
+                          :user "apikey")
+                    :url "https://api.deepseek.com/"
+                    :chat-model "deepseek-chat")))
+#+end_src
+
+We need to add all models from that ~fetch-openrouter-models~ call.
+#+begin_src elisp
+(defmacro add-openrouter-model (name model-url)
+  `(cons ,name  (make-llm-openai-compatible
+                     :key (get-auth-info
+                           :host "openrouter.ai"
+                           :user "apikey")
+                     :url "https://openrouter.ai/api/v1"
+                     :chat-model ,model-url)))
+
+(setq ellama-providers
+        `(,@(mapcar (lambda (model)
+                      (add-openrouter-model (car model) (cdr model)))
+                    (fetch-openrouter-models))))
+#+end_src
+
+Here is the endresult.
+#+BEGIN_EXPORT html
+<video width=100% controls autoplay>
+    <source src="/ellama_models.webm" type="video/webm">
+    Your browser does not support the video tag.
+</video>
+#+END_EXPORT
+
+** gptel with openrouter models
+
+Now the same can be achieved for gptel.
+gptel does know the concept of adding more models from the same provider in one place as a list at the ~:models~ parameter.
+
+#+begin_src elisp
+  (gptel-make-openai "OpenRouter"               ;Any name you want
+    :host "openrouter.ai"
+    :endpoint "/api/v1/chat/completions"
+    :stream t
+    :key (gptel-api-key-from-auth-source "openrouter.ai")
+    :models (mapcar (lambda (model)
+                      (cdr model))
+               (fetch-openrouter-models)))
+#+end_src
+** BONUS: gptel with all ollama models
+
+Ellama can already get all the ollama models currently installed, but gptel needs an explicit list.
+
+#+begin_src elisp
+(defun get-ollama-models ()
+  "Fetch the list of installed Ollama models."
+  (let* ((output (shell-command-to-string "ollama list"))
+         (lines (split-string output "\n" t))
+         models)
+    (dolist (line (cdr lines))  ; Skip the first line
+      (when (string-match "^\\([^[:space:]]+\\)" line)
+        (push (match-string 1 line) models)))
+    (nreverse models)))
+
+  (gptel-make-ollama "Ollama"             ;Any name of your choosing
+    :host "localhost:11434"               ;Where it's running
+    :stream t                             ;Stream responses
+    :models (get-ollama-models))          ;List of models
+#+end_src
