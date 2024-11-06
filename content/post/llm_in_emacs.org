@@ -32,18 +32,20 @@ Ellama is a tool for interacting with large language models from Emacs. It allow
 The name “ellama” is derived from “Emacs Large LAnguage Model Assistant”. Previous sentence was written by Ellama itself.
 #+end_quote
 
-Ellama empowers me to leverage Large Language Models (LLMs) for diverse purposes, including correcting grammar mistakes, enhancing wording, answering general questions, and writing or editing code, all within a unified package suite.
+Ellama offers a frontend to LLMs for diverse purposes.
+In a buffer it can correct grammar mistakes, enhancing wording (quite useful for a non native english speaker!), answer general question, assist in writing or editing code and more.
+Ellama can also be fed the current buffer or specific files when asking questions.
 
-A notable feature is the ability to augment the context with files or selected text when posing questions, further enriching the inquiry process.
+Overall, I like Ellama a lot, relying on it approximately 90% of the time for my LLM needs at the time of writing.
+One thing I particularly like about Ellama is that switching out models is particularly easy, which makes LLM experimentation fun.
 
-Overall, I hold Ellama in high regard, relying on it approximately 90% of the time for my LLM needs. A significant advantage is its facilitation of seamless model switching, allowing effortless utilization of multiple models.
-
-One aspect where Ellama falls slightly short of my expectations is in replicating a conversational experience, an area where GPTel exhibits more prowess. A conversations continuum requires re-invoking the ~ellama-chat~ interface.
+One aspect I like a bit less about Ellama is in replicating a conversational, 'chat', experience, an area where gptel is better. A conversations continuum requires re-invoking the ~ellama-chat~ interface.
+~ellama-chat~ takes input from the echo area, which is not super edit friendly.
 
 Initially, Ellama's support was limited to locally hosted models via the Ollama API. However, with its transition to utilizing the LLM Emacs package, it now also supports OpenAI-compatible APIs, a standard nearly universally adopted across providers.
 
 ** Ellama with doom emacs
-By default ellama saved its sessions into my ~.doom.d/~ folder. [[https://github.com/doomemacs/doomemacs][Doom emacs]] uses a variant of org mode for documentation in there which made emacs hang when ellama was used.
+By default Ellama saved its sessions into my ~.doom.d/~ folder. [[https://github.com/doomemacs/doomemacs][Doom emacs]] uses a variant of org mode for documentation in there which made emacs hang when Ellama was used.
 The solution is to place configure ~ellama-sessions-directory~ some place else like
 #+begin_src elisp
 (setq ellama-sessions-directory "~/.emacs.d/.local/cache/ellama-sessions")
@@ -65,18 +67,18 @@ From [[https://github.com/karthink/gptel][gptel]]
 gptel is a simple Large Language Model chat client for Emacs, with support for multiple models and backends. It works in the spirit of Emacs, available at any time and uniformly in any buffer.
 #+end_quote
 
-Unlike ellama which leverages the llm emacs package behind the screen, gptel has its own backend code for talking to multiple llm providers.
-gptel functionality is much more reduced compared to gptel. It's just provides a chat interface to llms. However it does feel more like a real chat than ellama.
+Unlike Ellama which leverages the llm emacs package behind the screen, gptel has its own backend code for talking to multiple llm providers.
+gptel functionality is much more reduced compared to gptel. It's just provides a chat interface to llms. However it does feel more like a real chat than Ellama.
 gptel does feature a menu to change the instructions, context, providers, input and output parameters of the requests.
 It works well, but I feel that this menu to do things integrates less well into my workflow.
 
 I also like changing llm providers often and out of the box gptel's menu makes that a few more steps.
 
-* Adding all Openrouter and ellama models to gptel and ellama
+* Adding all Openrouter and Ollama models to gptel and Ellama
 
 As already mentioned, I like playing with multiple LLMs. [[https://openrouter.ai/][Openrouter]] provides access to a lot of different models.
 I want to have access to all off them in emacs.
-Neither gptel, nor ellama can access all off them by default, so I had ellama write me some code to achieve his.
+Neither gptel, nor Ellama can access all off them by default, so I had Ellama write me some code to achieve his.
 
 ** Ellama with openrouter models
 
@@ -150,9 +152,9 @@ gptel does know the concept of adding more models from the same provider in one 
                       (cdr model))
                (fetch-openrouter-models)))
 #+end_src
-** BONUS: gptel with all ollama models
+** BONUS: gptel with all Ollama models
 
-Ellama can already get all the ollama models currently installed, but gptel needs an explicit list.
+Ellama can already get all the Ollama models currently installed, but gptel needs an explicit list.
 
 #+begin_src elisp
 (defun get-ollama-models ()
