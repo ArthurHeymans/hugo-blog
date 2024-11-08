@@ -68,7 +68,7 @@ gptel is a simple Large Language Model chat client for Emacs, with support for m
 #+end_quote
 
 Unlike Ellama which leverages the llm emacs package behind the screen, gptel has its own backend code for talking to multiple llm providers.
-gptel functionality is much more reduced compared to gptel. It's just provides a chat interface to llms. However it does feel more like a real chat than Ellama.
+gptel's functionality is more limited compared to Ellama or at least a bit more 'manual'. It's just provides a chat interface to llms. However it does feel more like a real chat than Ellama.
 gptel does feature a menu to change the instructions, context, providers, input and output parameters of the requests.
 It works well, but I feel that this menu to do things integrates less well into my workflow.
 
