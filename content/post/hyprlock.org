@@ -1,0 +1,64 @@
+#+title: Getting Hypridle to work with Hyprlock
+#+date: 2024-12-05T09:09:17+01:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+I recently switched from Sway to Hyprland. The primary reason for this change was my interest in content creation. Hyprland can record single windows, whereas Sway can only record the entire screen or part of it.
+
+So far, the transition has been smooth until I encountered the following issue after waking it from suspend with the lid closed.
+
+[[/hypridle_oopsie.jpg]]
+
+* My Use Case
+
+I have a laptop that is mostly connected to a docking station driving an external display. The lid remains closed, and I don't want the laptop display enabled. When no display is connected, I want the device to suspend. This is managed by logind.
+
+I want Hypridle to lock the screen with Hyprlock before it goes to sleep so that I am greeted with a lock screen upon waking the system.
+
+* Fixing Hypridle + Hyprlock
+
+My initial attempt was to enable and disable the monitor based on the lid switch.
+
+#+begin_src hyprlang
+bindl=,switch:on:Lid Switch, exec, hyprctl keyword monitor "eDP-1, disable"
+bindl=,switch:off:Lid Switch, exec, hyprctl keyword monitor "eDP-1, enable"
+#+end_src
+
+However, it seems that disabling the monitor confuses Hyprlock as it has no monitor to run on. Closing and reopening the lid quickly or connecting an external monitor temporarily resolves the issue.
+
+The correct solution is not to disable the monitor when no external monitor is connected. This can be achieved as follows:
+
+#+begin_src hyprlang
+bindl=,switch:on:Lid Switch, exec, ~/.config/hypr/handle_lid_switch.sh
+bindl=,switch:off:Lid Switch, exec, hyprctl keyword monitor "eDP-1, enable"
+#+end_src
+
+With `handle_lid_switch.sh`:
+#+begin_src bash
+#!/usr/bin/env sh
+
+output=$(hyprctl monitors)
+
+# Use grep to count the occurrences of the word "Monitor," which indicates a new monitor entry
+monitor_count=$(echo "$output" | grep -c "^Monitor")
+
+# Check if there is more than one monitor
+if [ "$monitor_count" -gt 1 ]; then
+    hyprctl keyword monitor "eDP-1, disable"
+fi
+#+end_src
+
+If you have an older system, replace `eDP-1` with `LVDS-1`.
+
+Now, I am greeted with my desired lock screen:
+[[/working_hyprlock.jpg]]
