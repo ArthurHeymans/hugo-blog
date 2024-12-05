@@ -58,7 +58,7 @@ if [ "$monitor_count" -gt 1 ]; then
 fi
 #+end_src
 
-If you have an older system, replace `eDP-1` with `LVDS-1`.
+If you have an older system, replace ~eDP-1~ with ~LVDS-1~.
 
 Now, I am greeted with my desired lock screen:
 [[/working_hyprlock.jpg]]
