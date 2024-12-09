@@ -53,8 +53,6 @@ struct User {
 
 Here, we've decided that a User "exists" and has certain properties. We've made assumptions about what makes up a user's identity. Is a user still the same user if their email changes? These are ontological questions.
 
-** Traits and Generics in Rust and Ontology
-
 Rust's trait system provides a powerful way to express ontological relationships through behavior-based abstractions:
 
 #+begin_src rust
@@ -140,9 +138,9 @@ process_items(vec.iter().map(|x| x * 2));
 
 While we write high-level, iterator-based code with maps and filters, Rust's compiler transforms this into machine code that's as efficient as hand-written low-level code. The abstraction exists only at compile time, disappearing entirely in the final binary. This demonstrates how we can work with meaningful high-level concepts while still maintaining direct correspondence with hardware reality.
 
-* Practical Applications
+* Good design is making the proper ontological decisions
 
-To apply ontological thinking in your work, consider:
+Good design often means making the right abstractions:
 
 1. Domain Modeling
    - What are the essential entities?
@@ -156,6 +154,8 @@ To apply ontological thinking in your work, consider:
 
 3. Data Structure Design
    - What properties are intrinsic vs. incidental?
+
+So finding elegant solutions to problems often boils down to designing a proper ontology, which capture the problem and solutions in the least complicated way.
 
 * Conclusion
 
