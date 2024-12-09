@@ -21,6 +21,23 @@ As software developers, we spend our days creating objects, defining relationshi
 
 In philosophy, ontology asks fundamental questions like "What exists?" and "What are the relationships between different things that exist?" These might sound abstract, but as programmers, we deal with similar questions every day. When we create a class hierarchy or design a database schema, we're actually doing ontological work – we're defining what "exists" in our software universe and how these things relate to each other.
 
+** A classical medieval ontological debate: nominalism vs realism
+A fundamental debate in ontology centers around nominalism versus realism, and we can illustrate this with the concept of "tree." The realist position argues that universal concepts like "tree" have real existence independent of individual instances – that there is some real, abstract "treeness" that all trees participate in or exemplify. A maple and an oak are both trees because they share in this universal concept of "tree."
+
+In contrast, nominalism contends that "tree" is merely a name we've invented to group similar things together conveniently. There is no real universal "treeness" – only individual trees with similarities that we've chosen to categorize under one label. From this view, "tree" is just a useful linguistic construct, not a real existing thing.
+
+Let's translate this to programming: When we create a Tree class or interface, are we capturing some real, universal nature of trees, or are we simply creating a convenient abstraction? Consider:
+
+#+begin_src rust
+trait Tree {
+    fn grow(&self);
+    fn photosynthesize(&self);
+}
+#+end_src
+
+A realist might argue this trait captures something fundamentally real about all trees. A nominalist would say we're just creating a useful grouping for our specific programming needs, with no claim to capturing any universal reality.
+
+
 ** Ontology in Programming: Practical Examples
 
 Let's consider a simple example: creating a User type in an application. When we do this, we're making ontological decisions:
