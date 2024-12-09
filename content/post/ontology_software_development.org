@@ -23,33 +23,48 @@ In philosophy, ontology asks fundamental questions like "What exists?" and "What
 
 ** Ontology in Programming: Practical Examples
 
-Let's consider a simple example: creating a User class in an application. When we do this, we're making ontological decisions:
+Let's consider a simple example: creating a User type in an application. When we do this, we're making ontological decisions:
 
-#+begin_src python
-class User:
-    def __init__(self, name, email, age):
-        self.name = name
-        self.email = email
-        self.age = age
+
+#+begin_src rust
+struct User {
+    name: String,
+    email: String,
+    age: u32,
+}
 #+end_src
 
 Here, we've decided that a User "exists" and has certain properties. We've made assumptions about what makes up a user's identity. Is a user still the same user if their email changes? These are ontological questions.
 
-** Object-Oriented Programming and Ontology
+** Traits and Generics in Rust and Ontology
 
-Object-oriented programming (OOP) is perhaps the clearest example of ontological thinking in programming. When we create classes and inheritance hierarchies, we're creating a formal ontology:
+Rust's trait system provides a powerful way to express ontological relationships through behavior-based abstractions:
 
-#+begin_src python
-class Animal:
-    pass
+#+begin_src rust
+trait Animal {
+    fn make_sound(&self);
+}
 
-class Mammal(Animal):
-    pass
+trait Mammal: Animal {
+    fn give_birth(&self);
+}
 
-class Dog(Mammal):
-    pass
+struct Dog;
+
+impl Animal for Dog {
+    fn make_sound(&self) {
+        println!("Woof!");
+    }
+}
+
+impl Mammal for Dog {
+    fn give_birth(&self) {
+        println!("Giving birth to puppies");
+    }
+}
 #+end_src
-This structure represents our understanding of how these entities relate to each other in reality. We're saying that a Dog "is a" Mammal, and a Mammal "is an" Animal. This is ontological classification at work.
+
+This structure represents our understanding of how these entities relate to each other in reality. We're saying that a Dog implements the behaviors of both a Mammal and an Animal. This is ontological classification at work through behavioral traits rather than hierarchical inheritance.
 
 ** Database Design and Ontology
 
@@ -77,6 +92,29 @@ This leads to interesting possibilities like self-modifying code and metaprogram
 * The Abstraction Gap: Software Concepts vs Hardware Reality
 
 There's a fascinating divide between what we perceive as real in our software development world and what's real for the hardware. While we work with high-level concepts like objects, methods, and inheritance, the hardware only knows about binary patterns, memory addresses, and basic arithmetic operations. What we consider "real" in our code - like a User object with properties and behaviors - is actually an elaborate illusion created by layers of abstraction. For us, these objects and their relationships are very real and meaningful, but to the hardware, they're just sequences of ones and zeros being moved around and manipulated according to basic instructions. This gap between our human-level abstractions and the machine's reality is both a testament to the power of abstraction and a reminder of the fundamentally different ontological levels at which we and our machines operate.
+** Zero-Cost Abstractions in Rust
+
+Rust provides an excellent example of managing the abstraction gap through its zero-cost abstractions. Consider this example:
+
+#+begin_src rust
+// High-level abstraction
+fn process_items<I>(iter: I)
+where
+    I: Iterator<Item = u32>
+{
+    for item in iter {
+        // Process each item
+    }
+}
+
+// Usage
+let vec = vec![1, 2, 3, 4, 5];
+process_items(vec.iter().map(|x| x * 2));
+#+end_src
+
+While we write high-level, iterator-based code with maps and filters, Rust's compiler transforms this into machine code that's as efficient as hand-written low-level code. The abstraction exists only at compile time, disappearing entirely in the final binary. This demonstrates how we can work with meaningful high-level concepts while still maintaining direct correspondence with hardware reality.
+
+[Remaining sections continue unchanged]
 
 * Practical Applications
 
@@ -94,7 +132,6 @@ To apply ontological thinking in your work, consider:
 
 3. Data Structure Design
    - What properties are intrinsic vs. incidental?
-   - How should inheritance and composition be used?
 
 * Conclusion
 
