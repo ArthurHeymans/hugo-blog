@@ -37,11 +37,9 @@ trait Tree {
 
 A realist might argue this trait captures something fundamentally real about all trees. A nominalist would say we're just creating a useful grouping for our specific programming needs, with no claim to capturing any universal reality.
 
-
 ** Ontology in Programming: Practical Examples
 
 Let's consider a simple example: creating a User type in an application. When we do this, we're making ontological decisions:
-
 
 #+begin_src rust
 struct User {
@@ -113,8 +111,6 @@ While the von Neumann architecture conceptually treats code and data as the same
 This creates an interesting ontological phenomenon: at the abstract interface level, we maintain the von Neumann model where code and data are fundamentally the same thing, but the actual implementation uses separate instruction and data caches, specialized buses, and distinct memory pathways. This demonstrates how abstractions can maintain one ontological model while the underlying reality operates on different principles.
 
 This separation between the abstract model and physical implementation is philosophically significant. It shows how different ontological frameworks can coexist at different levels of abstraction, with each being "true" in its own context. The von Neumann model remains true at the programming interface level, while the Harvard architecture is true at the hardware implementation level. This multi-layered reality is a common pattern in computing systems, where abstract models and physical implementations can differ while maintaining consistent behavior at their interfaces.
-
-
 
 ** Zero-Cost Abstractions in Rust
 
