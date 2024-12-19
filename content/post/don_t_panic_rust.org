@@ -11,7 +11,7 @@
 #+math: false
 #+slider: false
 #+private: false
-#+draft: true
+#+draft: false
 
 #+ATTR_HTML: :class center no-border :width 700px
 [[/panic.png]]
@@ -161,7 +161,6 @@ Here's an example of identifying a bounds check panic:
 _ZN16caliptra_runtime19authorize_and_stash20AuthorizeAndStashCmd19find_metadata_entry17h77cc74406e3bbf22E:
 
     ...
-
 
 .LBB147_8:
 	li	a0, 127
