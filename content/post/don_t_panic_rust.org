@@ -1,0 +1,213 @@
+#+title: Panics in rust and how to track them
+#+date: 2024-12-19T20:11:27+01:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: true
+
+#+ATTR_HTML: :class center no-border :width 700px
+[[/panic.png]]
+
+* Introduction to panics in rust
+Undefined behavior (UB) is one of the most dangerous issues in systems programming, leading to crashes, security vulnerabilities, and unpredictable results. Rust prevents UB by panicking - forcefully stopping the program - when potentially unsafe operations are detected.
+
+Panics are Rust's way of handling unrecoverable errors. Unlike =Result= which handles expected errors, panics occur when:
+
+- Array bounds are exceeded
+- Integer overflow in debug mode
+- Explicit calls to =panic!()= macro
+- Failed assertions
+- Calling =unwrap()= on =None= or =Err= values
+- Attempting operations that may cause undefined behavior
+
+Key points about panics:
+- They unwind the stack by default
+- Can be caught using =std::panic::catch_unwind=
+- Leave detailed backtraces when =RUST_BACKTRACE=1= is set
+- Commonly used for programming errors rather than recoverable errors
+- Help prevent undefined behavior by failing fast
+* Methods to avoid them
+In firmware development, panics are particularly problematic. Unlike application software, firmware typically can't gracefully recover from a panic - there's no OS to catch the failure, leading to a complete device shutdown or undefined behavior. This is especially critical in safety-critical systems where reliability is paramount.
+
+On top of being undesirable behavior in many cases, panics can affect performance and increase the binary size, as they require bundling error handling and stack unwinding code. Using Result types for recoverable errors is often more efficient.
+
+
+Two effective methods to enforce panic-free code:
+
+1. Fail at Link Time:
+   By using =#[panic_handler]= with an empty implementation and relying on linker garbage collection, any code path that could trigger a panic will fail to link. The linker removes unused panic code, but if panic is actually reachable, linking fails due to missing panic implementation.
+
+2. CI Symbol Detection:
+   The panic handler produces a specific unmangled symbol (like =rust_begin_unwind=). By checking for this symbol's presence in the compiled binary during CI, we can detect if panic-capable code was included. Linker garbage collection would normally remove unused panic code, so finding this symbol indicates reachable panic paths.
+
+   An example:
+   #+begin_src rust
+#[panic_handler]
+#[inline(never)]
+#[cfg(not(feature = "std"))]
+fn rom_panic(_: &core::panic::PanicInfo) -> ! {
+    cprintln!("Panic!!");
+    panic_is_possible();
+
+    handle_fatal_error(CaliptraError::ROM_GLOBAL_PANIC.into());
+}
+
+#[no_mangle]
+#[inline(never)]
+fn panic_is_possible() {
+    black_box(());
+    // The existence of this symbol is used to inform test_panic_missing
+    // that panics are possible. Do not remove or rename this symbol.
+}
+   #+end_src
+
+   This is what the test looks like:
+   #+begin_src rust
+#[test]
+fn test_panic_missing() {
+    let rom_elf = caliptra_builder::build_firmware_elf(firmware::rom_from_env()).unwrap();
+    let symbols = caliptra_builder::elf_symbols(&rom_elf).unwrap();
+    if symbols.iter().any(|s| s.name.contains("panic_is_possible")) {
+        panic!(
+            "The caliptra ROM contains the panic_is_possible symbol, which is not allowed. \
+                Please remove any code that might panic."
+        )
+    }
+}
+   #+end_src
+* Tracking them down
+What will be explained next is how to track down which code is causing panics in your project. This example is from the caliptra-sw project which is firmware running on open source hardware to implement a root of trust.
+
+** Step 1: Emit Assembly Code
+First, we need to tell the Rust compiler to generate assembly output. Add this to your build configuration:
+
+#+begin_src bash
+RUSTFLAGS="--emit asm" cargo build
+#+end_src
+
+In the caliptra project however firmware is build using rust code that calls cargo.
+
+#+begin_src diff
+diff --git a/builder/src/lib.rs b/builder/src/lib.rs
+index 2facac3b..18ab23f6 100644
+--- a/builder/src/lib.rs
++++ b/builder/src/lib.rs
+@@ -193,6 +193,7 @@ pub fn build_firmware_elfs_uncached<'a>(
+                 .arg("target.'cfg(all())'.rustflags = [\"-Dwarnings\"]");
+         }
+
++        cmd.env("RUSTFLAGS", "--emit asm");
+         cmd.arg("build")
+             .arg("--quiet")
+             .arg("--locked")
+#+end_src
+** Step 2: Locate the Assembly File
+After compilation, look for files with the =.s= extension in your target directory. They'll typically be under:
+#+begin_src text
+target/<architecture>/<profile>/deps/<crate_name>-<hash>.s
+#+end_src
+
+In our case the panic code was actually overflowing the allocated code size so cargo was spewing out the following:
+
+#+begin_quote
+error: linking with `rust-lld` failed: exit status: 1
+  |
+  = note: LC_ALL="C" PATH="/home/arthur/.rustup/toolchains/1.83-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin:/home/arthur/.bun/bin:/home/arthur/.nix-profile/bin:/home/arthur/go/bin:/home/arthur/.local/bin:/usr/local/go/bin:/home/arthur/.fzf/bin:/home/arthur/.doom.d/bin:/home/arthur/.bun/bin:/usr/condabin:/home/arthur/.cargo/bin:/home/arthur/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin" VSLANG="1033" "rust-lld" "-flavor" "gnu" "/tmp/rustcNDdY2Z/symbols.o" "/home/arthur/src/caliptra-sw/target/riscv32imc-unknown-none-elf/firmware/deps/caliptra_runtime-2f57a4e948bded64.caliptra_runtime.f02edb16d3be2c4f-cgu.0.rcgu.o" "--as-needed" "-Bstatic" "/home/arthur/.rustup/toolchains/1.83-x86_64-unknown-linux-gnu/lib/rustlib/riscv32imc-unknown-none-elf/lib/libcompiler_builtins-8e346f9e4bc24f1e.rlib" "-Bdynamic" "-z" "noexecstack" "-L" "/home/arthur/src/caliptra-sw/target/riscv32imc-unknown-none-elf/firmware/build/caliptra-runtime-3286fb9e516d40c7/out" "-L" "/home/arthur/src/caliptra-sw/target/riscv32imc-unknown-none-elf/firmware/build/caliptra-cpu-4936fb1eeac54fa0/out" "-o" "/home/arthur/src/caliptra-sw/target/riscv32imc-unknown-none-elf/firmware/deps/caliptra_runtime-2f57a4e948bded64" "--gc-sections" "--strip-debug" "-Tmemory.x" "-Tlink.x"
+  = note: rust-lld: error: section '.rodata' will not fit in region 'ICCM': overflowed by 1592 bytes
+
+
+error: could not compile `caliptra-runtime` (bin "caliptra-runtime") due to 1 previous error
+test test_panic_missing::test_panic_missing ... FAILED
+
+failures:
+
+---- test_panic_missing::test_panic_missing stdout ----
+thread 'test_panic_missing::test_panic_missing' panicked at runtime/tests/runtime_integration_tests/test_panic_missing.rs:6:71:
+called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "Process \"/home/arthur/.rustup/toolchains/1.83-x86_64-unknown-linux-gnu/bin/cargo\" CommandArgs { inner: [\"build\", \"--quiet\", \"--locked\", \"--target\", \"riscv32imc-unknown-none-elf\", \"--features\", \"emu,fips_self_test,riscv\", \"--no-default-features\", \"--profile\", \"firmware\", \"-p\", \"caliptra-runtime\", \"--bin\", \"caliptra-runtime\"] } exited with status code Some(101)" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+#+end_quote
+
+Which also leads to the same location of what we're looking for.
+
+** Step 3: Find the Panic Entry Point
+Search for the =rust_begin_unwind= function in the assembly file. This is the entry point for all panic calls:
+
+#+begin_src asm
+.section	.text.rust_begin_unwind,"ax",@progbits
+rust_begin_unwind:
+    // ... assembly code
+#+end_src
+
+** Step 4: Trace the Call Chain
+From =rust_begin_unwind=, follow the call chain backward. Look for functions that:
+- Call panic-related functions
+- Contain bounds checks
+- Have array access operations
+
+Here's an example of identifying a bounds check panic:
+
+#+begin_src asm
+    .section	.text._ZN16caliptra_runtime19authorize_and_stash20AuthorizeAndStashCmd19find_metadata_entry17h77cc74406e3bbf22E,"ax",@progbits
+	.p2align	1
+	.type	_ZN16caliptra_runtime19authorize_and_stash20AuthorizeAndStashCmd19find_metadata_entry17h77cc74406e3bbf22E,@function
+_ZN16caliptra_runtime19authorize_and_stash20AuthorizeAndStashCmd19find_metadata_entry17h77cc74406e3bbf22E:
+
+    ...
+
+
+.LBB147_8:
+	li	a0, 127
+	li	a1, 127
+	call	_ZN4core9panicking18panic_bounds_check17h9979da466cf2bb7aE
+#+end_src
+
+This assembly snippet shows a bounds check panic occurring when an index reaches 127, indicating an array access beyond its bounds.
+We should find the culprit in =find_metadata_entry= as a method inside the =AuthorizeAndStashCmd= struct which is inside =authorize_and_stash= module which is part of the =caliptra_runtime= crate.
+
+** Step 5: Fix the code
+
+This is the code that
+#+begin_src rust
+    #[inline(never)]
+    fn find_metadata_entry(
+        auth_manifest_image_metadata_col: &AuthManifestImageMetadataCollection,
+        cmd_fw_id: u32,
+    ) -> Option<&AuthManifestImageMetadata> {
+        auth_manifest_image_metadata_col
+            .image_metadata_list
+            .binary_search_by(|metadata| metadata.fw_id.cmp(&cmd_fw_id))
+            .ok()
+            .map(|index| &auth_manifest_image_metadata_col.image_metadata_list[index])
+    }
+#+end_src
+
+So the compiler does not know that binary search always returns a valid index (this seems to be a regression from a toolchain update from 1.70 to 1.83).
+Fixing out of bound index issues can be done by using =.get(index)= instead of =[index]= which returns an =Option=.
+
+#+begin_src diff
+diff --git a/runtime/src/authorize_and_stash.rs b/runtime/src/authorize_and_stash.rs
+index f6d4fc1c..df77f6a4 100644
+--- a/runtime/src/authorize_and_stash.rs
++++ b/runtime/src/authorize_and_stash.rs
+@@ -118,6 +118,6 @@ impl AuthorizeAndStashCmd {
+             .image_metadata_list
+             .binary_search_by(|metadata| metadata.fw_id.cmp(&cmd_fw_id))
+             .ok()
+-            .map(|index| &auth_manifest_image_metadata_col.image_metadata_list[index])
++            .map(|index| auth_manifest_image_metadata_col.image_metadata_list.get(index))?
+     }
+ }
+#+end_src
+
+And sure enough. Our panic is gone after that!
+* Special thanks
+
+Special thanks to the people on the Microsoft firmware team for learning me this trick!
