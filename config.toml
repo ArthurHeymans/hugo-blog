@@ -2,7 +2,6 @@ baseURL = "https://blog.aheymans.xyz"
 # title = "Hugo Themes"
 author = "Arthur Heymans"
 copyright = "Copyright © 2018–2024, Arthur Heymans; all rights reserved."
-paginate = 10
 languageCode = "en"
 DefaultContentLanguage = "en"
 enableInlineShortcodes = true
@@ -15,6 +14,9 @@ googleAnalytics = "G-X06JREDPPQ"
 # ------------------------------
 theme = "terminal"
 title = "Arthur's blog"
+
+[pagination]
+  pagerSize = 10
 
 [params]
   github = 'ArthurHeymans'
@@ -135,7 +137,7 @@ series = "series"
     disabled = false
     simple = true
 
-  [privacy.twitter]
+  [privacy.x]
     disabled = false
     enableDNT = true
     simple = true
@@ -153,7 +155,7 @@ series = "series"
   [services.instagram]
     disableInlineCSS = true
 
-  [services.twitter]
+  [services.x]
     disableInlineCSS = true
 
 [module]
