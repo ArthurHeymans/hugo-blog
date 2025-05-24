@@ -1,0 +1,261 @@
+#+title: Serprog adventures in rust
+#+date: 2025-05-24T10:44:02+02:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: true
+
+* Serprog
+Serprog is a serial flasher protocol that allows a userspace program like [[https://flashprog.org/wiki/Flashprog][flashprog]] to communicate over a serial connection like RS232, USB endpount or a TCP stream to a microcontroller which talks to flash chip to read, write or erase it. Serprog works for all kinds of different flash chips but in this article we'll focus on SPI NOR since those are ubiquitous nowadays.
+
+* Picoprog at OSFC: using embassy as a multifunction device
+
+For OSFC 2024, 9elements hosted a coreboot workshop, which involved compiling coreboot and flashing it onto a [[https://radxa.com/products/x/x4/][Raxda x4 N100 board]]. To flash it and get uart output we needed some hardware. We thought it would be fun to create our own and allow people to take it home. We used an off the shelf Raspberry Pi Pico and designed a breakout board which makes it easy to attach a SPI clip and connect the boards UART pins.
+
+#+ATTR_HTML: :width 400px
+[[/picoprog.jpg]]
+
+** Embassy: concurrency without RTOS
+#+ATTR_HTML: :width 400px
+[[/embassy_pooh.jpg]]
+
+A Real-Time Operating System (RTOS) like FreeRTOS achieves concurrency by dividing work into independent threads that run normal code. When switching between threads, the entire processor context must be saved and restored, enabling preemptive multitasking where the kernel controls execution time and priorities.
+
+Embassy takes a different approach using Rust's async/await model. Instead of threads, it uses cooperative multitasking with futures - functions that become state machines when awaited. When a task awaits something (like waiting for a button press), it yields control voluntarily rather than being preempted. This eliminates the need to save/restore full processor context, making task switching much more efficient. Embassy handles interrupts by using wakers to resume the appropriate async task when events occur.
+
+You can learn more about [[https://github.com/embassy-rs/embassy][Embassy on GitHub]].
+
+*** Batteries Included
+
+Embassy comes with extensive built-in functionality that makes embedded development easier:
+
+- **Hardware Abstraction Layers (HALs)** for STM32, nRF, RP2040, and other microcontroller families
+- **Global time management** with Instant, Duration, and Timer types that never overflow
+- **Networking stack** with TCP/UDP, Ethernet, IP, and DHCP support
+- **USB device stack** with common classes like CDC and HID
+- **Bluetooth Low Energy** support for multiple chip families
+- **Bootloader with DFU** for secure firmware updates
+
+This comprehensive ecosystem means you can focus on your application logic rather than reinventing low-level functionality.
+
+* Making a serprog library and adding a new programmer: blue-pill
+
+Adding support for new hardware in Rust is remarkably straightforward thanks to the [[https://github.com/rust-embedded/embedded-hal][embedded-hal]] traits. When we decided to support the popular "blue pill" development board (STM32F103C8T6), which features a Cortex-M3 processor instead of the Cortex-M0+ in the RP2040, the transition was seamless.
+
+The STM32F103 brings some advantages: it has more processing power, built-in USB peripheral, and is widely available. However, the real magic happens in how Rust handles the hardware abstraction.
+
+** Trait-based Hardware Abstraction
+
+The embedded-hal crate defines common traits like =SpiDevice=, =InputPin=, and =OutputPin= that abstract over hardware-specific implementations. Our serprog library is written against these traits rather than concrete hardware types:
+
+#+begin_src rust
+pub struct SerprogDevice<SPI, CS> 
+where
+    SPI: SpiDevice,
+    CS: OutputPin,
+{
+    spi: SPI,
+    chip_select: CS,
+}
+#+end_src
+
+This means the same serprog code that works on the RP2040's SPI peripheral also works on the STM32F103's SPI peripheral - no changes required. The HAL implementations (=embassy-rp= for RP2040, =embassy-stm32= for STM32F103) handle the hardware-specific details like register configuration and clock setup.
+
+When we compile for the blue pill, Rust's zero-cost abstractions ensure that trait calls get inlined away, producing code as efficient as if we had written it directly for the STM32F103. This approach lets us support multiple microcontroller families with a single codebase, dramatically reducing maintenance overhead while maintaining performance.
+
+** Cargo Workspaces: One Repo, Multiple Programmers
+
+Managing multiple programmer implementations becomes elegant with [[https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html][Cargo workspaces]]. Our picoprog repository uses a workspace structure that makes development and maintenance remarkably clean:
+
+#+begin_src toml
+[workspace]
+members = [
+    "bluepill-prog",
+    "picoprog", 
+    "serprog"
+]
+#+end_src
+
+This structure provides several key benefits:
+
+- **Shared dependencies**: The core =serprog= library is used by both =picoprog= (RP2040) and =bluepill-prog= (STM32F103) without duplication
+- **Unified building**: =cargo build= compiles everything, while =cargo build -p picoprog= targets just the RP2040 version
+- **Consistent tooling**: Formatting, linting, and testing work across the entire codebase with single commands
+- **Version synchronization**: Dependencies stay aligned across all programmer implementations
+
+The =serprog= crate contains all the protocol logic and hardware-agnostic code, while =picoprog= and =bluepill-prog= are thin wrappers that provide hardware-specific initialization and pin configurations. When we add support for a new microcontroller family, we simply create a new workspace member that depends on the shared =serprog= crate.
+
+This workspace approach scales beautifully - adding support for ESP32, nRF52, or any other Embassy-supported platform requires minimal code duplication and maintains consistency across all implementations.
+
+* Rust async power: doing USB and SPI asynchronously
+
+Initially, our blue-pill implementation was reading a 64Mbit chip in 18 seconds, while [[https://github.com/dword1511/stm32-vserprog][stm32-vserprog]] on the same hardware achieved 11 seconds. The bottleneck was sequential operation: read from SPI, then send over USB, repeat. This left both peripherals idle for significant portions of the transfer.
+
+The solution was to pipeline these operations using Embassy's async capabilities. Instead of waiting for each USB transfer to complete before starting the next SPI operation, we could overlap them using zerocopy channels and async closures.
+
+** Zerocopy Channels for Efficient Pipelining
+
+Embassy's =zerocopy_channel= allows us to pass ownership of buffers between tasks without copying data:
+
+#+begin_src rust
+let mut usb_tx_spi_rx_buf = [([0u8; BUFFER_SIZE], 0); 8];
+let mut usb_tx_spi_rx_channel: Channel<'_, NoopRawMutex, ([u8; BUFFER_SIZE], usize)> =
+    Channel::new(&mut usb_tx_spi_rx_buf);
+let (spi_rx, usb_tx) = usb_tx_spi_rx_channel.split();
+#+end_src
+
+This creates a pipeline where the SPI task can fill buffers with flash data while the USB task simultaneously transmits previously filled buffers to the host.
+
+** Async Closures: Task Coordination
+
+We use async closures to create concurrent tasks that coordinate through the channels:
+
+#+begin_src rust
+async fn spi_task<SPI: SpiBus<u8>, CS: OutputPin>(
+    spi: &mut SPI,
+    sender: Sender<'_, NoopRawMutex, ([u8; BUFFER_SIZE], usize)>,
+    // ... parameters
+) -> Result<(), SerprogError> {
+    let mut data_to_read = rdata_size;
+    while data_to_read > 0 {
+        let (buf, size) = sender.send().await;
+        let read_size = data_to_read.min(buf.len());
+        spi.read(&mut buf[..read_size]).await?;
+        *size = read_size;
+        sender.send_done();
+        data_to_read -= read_size;
+    }
+    Ok(())
+}
+
+async fn usb_task<T: Transport>(
+    transport: &mut T,
+    mut receiver: Receiver<'_, NoopRawMutex, ([u8; BUFFER_SIZE], usize)>,
+    // ... parameters
+) -> Result<(), SerprogError> {
+    let mut data_to_send = rdata_size;
+    while data_to_send > 0 {
+        let (buf, size) = receiver.receive().await;
+        let size = *size;
+        transport
+            .write(&buf[..size])
+            .await
+            .map_err(|_| SerprogError::TransportWrite("Error writing SPI read data"))?;
+        receiver.receive_done();
+        data_to_send -= size;
+    }
+    Ok(())
+}
+#+end_src
+
+The two tasks run concurrently using Embassy's =join= combinator:
+
+#+begin_src rust
+let (spi_res, usb_res) = join(
+    spi_task(spi, spi_tx, op_slen, spi_rx, op_rlen, cs),
+    usb_task(transport, usb_rx, op_slen, sdata, usb_tx, op_rlen),
+).await;
+#+end_src
+
+The SPI task reads flash data into channel buffers, while a USB task concurrently sends completed buffers to the host. Embassy's executor ensures both tasks make progress efficiently, dramatically reducing idle time and improving throughput.
+
+This pipelined approach brings our blue-pill performance much closer to the optimized C implementation: down to 14s, demonstrating how Rust's async system can achieve both safety and performance.
+
+* Future: USB2.0 and extending serprog with QSPI
+** USB 1.1 -> USB 2.0
+
+Despite our async optimizations, USB 1.1 remains a fundamental bottleneck. The theoretical maximum throughput is 12 Mbit/s, but practical throughput is significantly lower due to protocol overhead. Meanwhile, our SPI interface running at 36MHz should theoretically achieve roughly 36 Mbit/s - three times faster than USB can handle.
+
+This mismatch means the SPI bus is often idle, waiting for USB transfers to complete. Even with perfect pipelining, we're fundamentally limited by the USB 1.1 specification.
+
+USB 2.0 High Speed mode provides 480 Mbit/s theoretical bandwidth - more than enough to saturate our SPI interface. From a software perspective, the transition is remarkably simple with Embassy. The primary change is increasing buffer sizes from 64 bytes (USB 1.1 Full Speed) to 512 bytes (USB 2.0 High Speed).
+
+We use a Cargo feature to handle this difference elegantly:
+
+#+begin_src toml
+[features]
+usb2 = []
+
+[dependencies]
+embassy-usb = "0.3"
+#+end_src
+
+The buffer size is then conditionally compiled:
+
+#+begin_src rust
+#[cfg(feature = "usb2")]
+const BUFFER_SIZE: usize = 512;
+
+#[cfg(not(feature = "usb2"))]
+const BUFFER_SIZE: usize = 64;
+#+end_src
+
+This approach allows the same codebase to work optimally on both USB 1.1 and USB 2.0 hardware, with the appropriate buffer sizes selected at compile time. When targeting USB 2.0 capable hardware like the STM32F4 series, simply enabling the =usb2= feature should unlock significantly higher throughput.
+** Multiple IO: Dual, Quad and even Octo SPI
+
+Modern SPI flash chips support multiple non-full-duplex IO modes that can dramatically increase throughput. Beyond traditional single-wire SPI (1-1-1 mode), flash chips commonly support:
+
+- **Dual Output (1-1-2)**: Command and address on single line, data on two lines
+- **Dual IO (1-2-2)**: Command on single line, address and data on two lines  
+- **Quad Output (1-1-4)**: Command and address on single line, data on four lines
+- **Quad IO (1-4-4)**: Command on single line, address and data on four lines
+- **QPI (4-4-4)**: Everything on four lines
+
+Some advanced microcontrollers like STM32H7 series include dedicated OCTOSPI/QSPI peripherals that handle these modes in hardware, automatically managing the complex timing and line switching requirements.
+
+*** Extending Serprog for Multi-IO
+
+The current serprog specification only supports traditional SPI operations. To leverage multi-IO modes, we need protocol extensions that convey the operation parameters. Each multi-IO operation requires several pieces of information:
+
+#+begin_src rust
+#[derive(Debug, Clone, Copy)]
+pub struct MultiIOSpiOp {
+    pub io_mode_and_direction: u8, // IO mode (bits 0-6) + read/write flag (bit 7)
+    pub opcode_len: u8,            // Usually 1 byte
+    pub addr_len: u8,              // 3 or 4 bytes typically
+    pub mode_bytes_len: u8,        // Chip-specific mode bytes
+    pub dummy_cycles: u8,          // Wait cycles between addr and data
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum IOMode {
+    Single111 = 0,    // Traditional SPI
+    DualOut112 = 1,   // Dual output
+    DualIO122 = 2,    // Dual IO  
+    QuadOut114 = 3,   // Quad output
+    QuadIO144 = 4,    // Quad IO
+    QPI444 = 5,       // Full quad
+}
+#+end_src
+
+The IO mode and direction are efficiently packed into a single byte, with bits 0-6 containing the IO mode and bit 7 indicating read (1) or write (0) direction.
+
+A proposed serprog packet structure might look like:
+
+#+begin_src rust
+#[repr(C, packed)]
+struct MultiIOSpiPacket {
+    cmd: u8,                     // New command: MULTI_IO_SPI_OP
+    io_mode_and_direction: u8,   // IO mode (bits 0-6) + read/write flag (bit 7)
+    opcode_len: u8,              // Length of opcode
+    addr_len: u8,                // Length of address  
+    mode_bytes_len: u8,          // Length of mode bytes
+    dummy_cycles: u8,            // Number of dummy cycles
+    data_len: [u8; 4],           // Data length (little-endian)
+    // Followed by: opcode, address, mode_bytes, then data
+}
+#+end_src
+
+This extension would allow serprog to fully utilize the speed advantages of modern flash chips and microcontroller peripherals, potentially achieving read speeds several times faster than traditional SPI.
+
+* Conclusion
+
+Rust and Embassy make embedded development genuinely enjoyable compared to traditional C firmware. The type system catches bugs at compile time instead of mysterious runtime failures. Our serprog implementation effortlessly supports multiple microcontrollers with the same codebase - surprisingly more portable than vendor-specific C SDKs. Modern tooling, async/await, and zero-cost abstractions mean you focus on interesting problems rather than fighting undefined behavior. For more Rust embedded adventures, check out the [[../probe_rs_remote][probe-rs remote debugging]] article.
