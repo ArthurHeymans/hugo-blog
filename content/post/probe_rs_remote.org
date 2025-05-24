@@ -389,7 +389,7 @@ Note that at the time of writing (May 2025), this remote server functionality is
 The remote server functionality requires enabling the `remote` feature during compilation:
 
 #+begin_src bash
-cargo install probe-rs --features remote
+cargo install probe-rs-tools --features remote
 #+end_src
 
 This feature is currently behind a feature flag as it adds additional dependencies for the web server and RPC functionality.
