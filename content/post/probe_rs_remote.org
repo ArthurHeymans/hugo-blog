@@ -1,0 +1,505 @@
+#+title: probe-rs: Making Embedded Development Feel Like Userspace Programming
+#+date: 2025-05-24T10:03:20+02:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+If you've ever developed embedded firmware, you know the pain: cryptic flashing tools, primitive debugging methods, and a workflow that feels decades behind modern software development. You write code, compile it, flash it to hardware through a complex toolchain, and then... hope it works. When it doesn't, you're stuck with blinking LEDs and printf debugging over UART. [[https://probe.rs][probe-rs]] fundamentally changes this experience by bringing the productive, familiar workflow of userspace development to the embedded world.
+
+* The Traditional Embedded Development Pain
+
+Let's consider what a typical embedded development cycle looks like without probe-rs. You want to run a simple program that blinks an LED and prints "Hello, World!" to a console:
+
+#+begin_src rust
+// Traditional embedded approach
+#![no_std]
+#![no_main]
+
+use panic_halt as _;
+use cortex_m_rt::entry;
+
+#[entry]
+fn main() -> ! {
+    // Initialize hardware (complex, target-specific)
+    let peripherals = init_hardware();
+    
+    loop {
+        // Blink LED
+        toggle_led(&peripherals);
+        
+        // Can't just println! - need complex UART setup
+        // or resort to blinking patterns to communicate state
+        delay_ms(1000);
+    }
+}
+#+end_src
+
+To get this running, you need to:
+1. Set up a complex build system with linker scripts
+2. Configure OpenOCD or similar tool for your specific debug probe
+3. Flash the binary using yet another tool
+4. Debug by either blinking LEDs in patterns or setting up UART communication
+5. Repeat this cycle every time you want to test a change
+
+The debugging experience is particularly painful. Want to know what your variables contain? Add some LEDs. Want to understand program flow? More LEDs. Need to inspect memory? Break out the JTAG debugger with its arcane GDB commands.
+
+* probe-rs: Embedded Programming That Just Works
+
+probe-rs eliminates these pain points by providing a unified, modern toolchain. The same "Hello, World!" program becomes:
+
+#+begin_src rust
+#![no_std]
+#![no_main]
+
+use panic_probe as _;
+use cortex_m_rt::entry;
+use rtt_target::{rprintln, rtt_init_print};
+
+#[entry]
+fn main() -> ! {
+    rtt_init_print!();
+    rprintln!("Hello, World! from embedded Rust");
+    
+    let mut counter = 0;
+    loop {
+        rprintln!("Counter: {}", counter);
+        counter += 1;
+        
+        // Set breakpoint here in VSCode just like any other program
+        cortex_m::asm::delay(8_000_000);
+    }
+}
+#+end_src
+
+Now your development cycle becomes:
+
+#+begin_src bash
+# Just like any other Rust program
+cargo run
+#+end_src
+
+That's it. probe-rs handles flashing, starts execution, and shows the RTT output in your terminal in real-time. You see "Hello, World!" and the incrementing counter just as if you were running a desktop application.
+
+** Real-Time Transfer: Bridging the Communication Gap
+
+The magic behind this seamless experience is RTT (Real-Time Transfer). Traditional embedded debugging requires you to sacrifice pins for UART communication, configure baud rates, and deal with buffer overflows. RTT uses the debug probe's existing connection to create a high-speed, bidirectional communication channel with zero hardware overhead.
+
+#+begin_src rust
+use rtt_target::{rprintln, rprint};
+
+// Print formatted output just like println!
+rprintln!("Sensor reading: {} degrees", temperature);
+
+// Even works with complex data structures
+#[derive(Debug)]
+struct SensorData {
+    temperature: f32,
+    humidity: f32,
+    timestamp: u32,
+}
+
+let data = SensorData { /* ... */ };
+rprintln!("Data: {:?}", data);
+#+end_src
+
+This output appears instantly in your development terminal, with no additional hardware setup required. The experience is indistinguishable from debugging a userspace application.
+
+** Professional Debugging in VSCode
+
+Perhaps most remarkably, probe-rs brings full-featured debugging to embedded development. Set up is minimal - just add a launch configuration:
+
+#+begin_src json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "Debug Embedded App",
+            "cwd": "${workspaceFolder}",
+            "chip": "STM32F411RETx",
+            "flashingConfig": {
+                "flashingEnabled": true,
+                "resetAfterFlashing": true
+            }
+        }
+    ]
+}
+#+end_src
+
+Now you can:
+- Set breakpoints by clicking in the gutter
+- Step through code line by line
+- Inspect variables in real-time
+- Evaluate expressions in the debug console
+- View call stacks and memory contents
+
+The debugging experience is identical to debugging any other application, except your code is running on a microcontroller.
+
+** Testing: Making Embedded Testing Feel Like Regular Unit Testing
+
+One of the most painful aspects of traditional embedded development is testing. Running tests typically means manually flashing different test binaries, resetting the device between tests, and manually verifying results - often through blinking LEDs or UART output. The probe-rs ecosystem addresses this with [[https://github.com/probe-rs/embedded-test][embedded-test]], which brings the familiar experience of ~cargo test~ to embedded systems.
+
+*** Traditional Embedded Testing Pain
+
+Without proper tooling, embedded testing looks like this:
+
+#+begin_src rust
+// Traditional approach - manual test runner
+#![no_std]
+#![no_main]
+
+fn test_sensor_reading() {
+    // Test code here
+    // Results communicated via LEDs or UART
+}
+
+fn test_motor_control() {
+    // Another test
+    // No isolation between tests
+}
+
+#[entry]
+fn main() -> ! {
+    // Manually call each test
+    test_sensor_reading();
+    test_motor_control();
+    // Hope nothing interferes between tests
+    loop {}
+}
+#+end_src
+
+This approach has numerous problems:
+- No isolation between tests
+- Manual test orchestration
+- Difficult result reporting
+- No support for test attributes like ~#[should_panic]~ or ~#[ignore]~
+- Time-consuming manual process for each test run
+
+*** embedded-test: Bringing ~cargo test~ to Embedded
+
+With embedded-test and probe-rs, the same tests become:
+
+#+begin_src rust
+#![no_std]
+#![no_main]
+
+#[cfg(test)]
+#[embedded_test::tests]
+mod tests {
+    use stm32f7xx_hal::pac::Peripherals;
+
+    // Optional init function called before each test
+    #[init]
+    fn init() -> Peripherals {
+        Peripherals::take().unwrap()
+    }
+
+    // Tests receive the state from init
+    #[test]
+    fn test_sensor_reading(peripherals: Peripherals) {
+        let sensor = setup_sensor(&peripherals);
+        let reading = sensor.read();
+        assert!(reading > 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_config(peripherals: Peripherals) {
+        // This test expects a panic
+        configure_invalid_setting(&peripherals);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_long_running_operation(peripherals: Peripherals) {
+        // Skipped by default, run with --ignored
+        perform_calibration(&peripherals);
+    }
+
+    #[test]
+    #[timeout(10)]
+    fn test_with_timeout(peripherals: Peripherals) {
+        // Fails if takes longer than 10 seconds
+        quick_operation(&peripherals);
+    }
+}
+#+end_src
+
+Running these tests is identical to any Rust project:
+
+#+begin_src bash
+# Run all tests
+cargo test
+
+# Run specific test
+cargo test test_sensor_reading
+
+# Run ignored tests
+cargo test -- --ignored
+
+# Filter tests by name
+cargo test sensor
+#+end_src
+
+*** How It Works: Intelligent Test Orchestration
+
+The embedded-test framework provides sophisticated test orchestration through probe-rs:
+
+1. **Single Flash**: All tests are compiled into one binary and flashed once
+2. **Test Discovery**: probe-rs queries the device for available tests via semihosting
+3. **Individual Execution**: For each test:
+   - Device is reset to ensure clean state
+   - Specific test is selected via semihosting commands
+   - Test runs with optional timeout
+   - Results reported back via semihosting
+4. **Result Aggregation**: All results collected and presented in familiar ~cargo test~ format
+
+This approach provides true test isolation - each test runs on a freshly reset device with clean hardware state, eliminating issues with shared global state or hardware configuration conflicts.
+
+*** Advanced Features
+
+embedded-test supports sophisticated testing patterns:
+
+#+begin_src rust
+#[embedded_test::tests]
+mod advanced_tests {
+    // Async tests (with embassy feature)
+    #[test]
+    async fn test_async_operation() {
+        let result = async_sensor_read().await;
+        assert_eq!(result, 42);
+    }
+
+    // Tests that return Results for better error reporting
+    #[test]
+    fn test_with_error_context() -> Result<(), &'static str> {
+        let config = load_config()
+            .ok_or("Failed to load configuration")?;
+        
+        validate_config(&config)
+            .ok_or("Configuration validation failed")?;
+            
+        Ok(())
+    }
+
+    // Conditional compilation of tests
+    #[test]
+    #[cfg(feature = "debug-mode")]
+    fn test_debug_features() {
+        // Only compiled when debug-mode feature is enabled
+    }
+}
+#+end_src
+
+*** IDE Integration
+
+Since embedded-test is ~libtest~ compatible, it integrates seamlessly with development environments:
+
+- **VSCode**: Click the "Run Test" button next to any test function
+- **IntelliJ/CLion**: Individual test execution through the gutter icons
+- **Command Line**: Standard ~cargo test~ filtering and options work identically
+
+This integration means embedded developers get the same productive testing workflow as userspace developers, with instant feedback and easy test isolation.
+
+The combination of probe-rs and embedded-test transforms embedded testing from a manual, error-prone process into an automated, reliable development practice that feels exactly like testing any other Rust code.
+
+* Technical Architecture: How probe-rs Achieves This Magic
+
+probe-rs accomplishes this by implementing a complete debug ecosystem built around modern protocols and smart abstractions.
+
+** Unified Probe Abstraction
+
+Traditional embedded toolchains require different tools for different debug probes. probe-rs provides a unified interface that works with:
+
+- CMSIS-DAP probes (including the popular Black Magic Probe)
+- ST-Link (ST's proprietary debugger)
+- J-Link (Segger's professional solution)  
+- FTDI-based probes
+- Their own open-source rusty-probe
+
+[[/probe_attached.jpg]]
+
+The image above shows a CH32 custom WCH-Link debugger attached to a CH32V307 development board, demonstrating probe-rs's support for diverse hardware ecosystems beyond the traditional ARM Cortex-M space.
+
+The same code works with any probe - no configuration changes needed when switching hardware.
+
+** Target Database and Flash Algorithms
+
+probe-rs ships with comprehensive support for hundreds of ARM Cortex-M and RISC-V targets. Each target includes:
+
+- Memory layout information
+- Flash programming algorithms
+- Reset and halt sequences
+- Architecture-specific debug features
+
+Missing a target? probe-rs can generate target descriptions from CMSIS-Pack files automatically, or you can write custom flash algorithms using their provided templates.
+
+** Debug Adapter Protocol Integration
+
+Rather than creating yet another proprietary debugging interface, probe-rs implements the Debug Adapter Protocol (DAP). This means it works out-of-the-box with:
+
+- VSCode
+- Vim (via vimspector)
+- Emacs (via dap-mode)
+- Any editor supporting DAP
+
+While Emacs has excellent DAP support through dap-mode, there's currently no direct probe-rs integration like VSCode's dedicated extension. This means Emacs users need to configure dap-mode manually to work with probe-rs's DAP server. Creating a dedicated Emacs package that provides seamless probe-rs integration - similar to what exists for VSCode - would be a valuable contribution to the embedded Rust ecosystem and something worth investigating.
+
+This standards-based approach ensures probe-rs fits into your existing development workflow.
+
+* Remote Development: Hardware Anywhere, Development Everywhere
+
+One of probe-rs's most powerful capabilities is remote debugging. Your embedded hardware can be physically located anywhere - in a test lab, deployed in the field, or even in another country - while you develop and debug as if the hardware were on your desk.
+
+This works through probe-rs's built-in gdb server mode:
+
+#+begin_src bash
+# On the machine connected to hardware
+probe-rs gdb-server --chip STM32F411RETx
+
+# From your development machine anywhere on the network
+arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/my-firmware
+(gdb) target remote remote-host:1337
+#+end_src
+
+This capability enables entirely new development workflows:
+- Distributed teams can share expensive hardware setups
+- Developers can debug deployed devices without physical access
+- Automated test systems can be controlled remotely
+- Hardware-in-the-loop testing becomes practical at scale
+
+** Remote Server: Centralizing Hardware Access
+
+Beyond the gdb server approach, probe-rs now includes a built-in remote server that provides a more sophisticated solution for sharing hardware across teams. This server exposes probe-rs's full functionality over a network, allowing multiple developers to access shared hardware resources without requiring SSH access or complex port forwarding.
+
+Note that at the time of writing (May 2025), this remote server functionality is not prominently featured in the official probe-rs documentation, as it's a relatively new addition that was merged in February 2025. The feature is stable and production-ready, but you may need to discover its capabilities through exploration or community resources.
+
+*** Building with Remote Support
+
+The remote server functionality requires enabling the `remote` feature during compilation:
+
+#+begin_src bash
+cargo install probe-rs --features remote
+#+end_src
+
+This feature is currently behind a feature flag as it adds additional dependencies for the web server and RPC functionality.
+
+*** Server Setup and Authentication
+
+Setting up the remote server requires creating a configuration file at `~/.probe-rs.toml` that defines user tokens:
+
+#+begin_src toml
+[[server.users]]
+name = "alice"
+token = "alice-secret-token"
+
+[[server.users]]
+name = "bob"
+token = "bob-different-token"
+#+end_src
+
+The authentication system uses a challenge-response mechanism where the server generates a random string, and the client must hash it with their token. This prevents tokens from being transmitted in plaintext while keeping the implementation simple.
+
+Start the server with:
+
+#+begin_src bash
+probe-rs serve
+#+end_src
+
+This starts both the RPC server and a web interface at `http://localhost:3000` that shows connected probes and basic status information.
+
+*** Remote Client Usage
+
+Once the server is running, clients can connect from anywhere on the network:
+
+#+begin_src bash
+# Flash firmware to remote hardware
+cargo run --host ws://localhost:3000 --token alice-secret-token
+
+# List remote probes
+probe-rs list --host ws://localhost:3000 --token alice-secret-token
+
+# Get chip information from remote target
+probe-rs chip --host ws://localhost:3000 --token alice-secret-token
+#+end_src
+
+The remote functionality currently supports most probe-rs commands including:
+- ~info~ - Discover and identify connected devices
+- ~list~ - Show available debug probes
+- ~download~ - Flash binaries to targets
+- ~run~ - Flash and execute programs with RTT output
+- ~attach~ - Connect to running targets
+- ~read/write~ - Memory operations
+- ~reset~ - Target reset operations
+- ~erase~ - Flash memory erasure
+- ~verify~ - Verify flash contents
+
+*** Transparent Operation
+
+From the developer's perspective, using remote hardware is nearly transparent. The same ~cargo run~ command that works locally will work with remote hardware by simply adding the host and token parameters. RTT output, error messages, and progress indicators all function identically whether the hardware is local or remote.
+
+This approach provides several advantages over traditional solutions:
+- **No SSH required**: Users don't need shell access to the hardware server
+- **Fine-grained access control**: Tokens can be per-user and easily revoked
+- **Web monitoring**: The built-in web interface provides visibility into hardware usage
+- **Native integration**: No need for VPNs or complex network configuration
+
+The remote server represents probe-rs's philosophy of making embedded development as friction-free as possible, extending that philosophy to distributed development scenarios.
+
+* Beyond Development: Production APIs
+
+While the developer experience improvements are impressive, probe-rs also provides clean APIs for building production tooling:
+
+#+begin_src rust
+use probe_rs::{Permissions, Probe, Session};
+
+// Connect to target
+let mut probe = Probe::list_all()[0].open()?;
+let mut session = probe.attach("STM32F411RETx", Permissions::default())?;
+
+// Read/write memory
+let mut core = session.core(0)?;
+let data = core.read_32(0x2000_0000)?;
+core.write_32(0x2000_0000, 0xDEADBEEF)?;
+
+// Flash programming
+session.target().flash_loader().load_elf_data(&mut session, elf_data)?;
+
+// Set breakpoints and control execution
+core.set_hw_breakpoint(0x0800_1000)?;
+core.run()?;
+#+end_src
+
+This API enables:
+- Custom flashing utilities
+- Hardware-in-the-loop test systems  
+- Automated validation frameworks
+- Manufacturing test equipment
+
+* The Philosophical Shift: Hardware as Just Another Target
+
+probe-rs represents more than just better tooling - it represents a fundamental shift in how we think about embedded development. Instead of treating embedded systems as a separate discipline requiring specialized knowledge and primitive tools, probe-rs brings embedded development into the mainstream of software engineering.
+
+This philosophical shift has practical benefits:
+- **Faster onboarding**: Developers familiar with modern tooling can be productive immediately
+- **Better code quality**: Modern debugging tools lead to better understanding and fewer bugs
+- **Increased productivity**: Less time fighting tools means more time solving actual problems
+- **Lower barrier to entry**: Embedded development becomes accessible to a broader range of developers
+
+The result is embedded development that feels like what software development should be: focused on solving problems rather than wrestling with tooling limitations.
+
+* Conclusion
+
+probe-rs eliminates the artificial barriers that have long separated embedded development from mainstream software engineering. By providing modern tooling, seamless debugging, and a standards-based approach, it transforms embedded development from a specialized craft into an accessible engineering discipline.
+
+Whether you're blinking your first LED or building complex IoT systems, probe-rs provides the foundation for a productive, enjoyable development experience. The future of embedded development looks a lot like the present of userspace development and probe-rs is making that future available today.
