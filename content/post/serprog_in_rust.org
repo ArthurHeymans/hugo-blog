@@ -256,6 +256,8 @@ struct MultiIOSpiPacket {
 
 This extension would allow serprog to fully utilize the speed advantages of modern flash chips and microcontroller peripherals, potentially achieving read speeds several times faster than traditional SPI.
 
+Note that this API is under construction and could still change.
+
 * Conclusion
 
 Rust and Embassy make embedded development genuinely enjoyable compared to traditional C firmware. The type system catches bugs at compile time instead of mysterious runtime failures. Our serprog implementation effortlessly supports multiple microcontrollers with the same codebase - surprisingly more portable than vendor-specific C SDKs. Modern tooling, async/await, and zero-cost abstractions mean you focus on interesting problems rather than fighting undefined behavior. For more Rust embedded adventures, check out the [[../probe_rs_remote][probe-rs remote debugging]] article.
