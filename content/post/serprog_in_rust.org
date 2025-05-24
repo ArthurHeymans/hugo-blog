@@ -11,7 +11,7 @@
 #+math: false
 #+slider: false
 #+private: false
-#+draft: true
+#+draft: false
 
 * Serprog
 Serprog is a serial flasher protocol that allows a userspace program like [[https://flashprog.org/wiki/Flashprog][flashprog]] to communicate over a serial connection like RS232, USB endpount or a TCP stream to a microcontroller which talks to flash chip to read, write or erase it. Serprog works for all kinds of different flash chips but in this article we'll focus on SPI NOR since those are ubiquitous nowadays.
