@@ -69,6 +69,8 @@ You might be wondering about those square brackets ~[ ]~ in the configuration. T
 
 Don't try to use a regular Emacs Lisp list like ~'("generate_templates")~ - it won't work! The LSP mode specifically expects the bracket notation. This tripped me up initially, as it looks more like JSON than idiomatic Emacs Lisp. But once you know the quirk, it's easy to remember: square brackets for LSP string vectors.
 
+Note: I was made aware that is just a native type: vectors: https://www.gnu.org/software/emacs/manual/html_node/elisp/Vectors.html
+
 * The safety warning
 
 Here's where things get interesting. When you first open a file in this directory, Emacs will notice the ~.dir-locals.el~ file and display a warning:
