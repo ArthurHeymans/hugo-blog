@@ -1,0 +1,137 @@
+#+title: Making Emacs LSP work with Rust conditional features
+#+date: 2025-06-11T11:23:17+02:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+So here is where it all started. I'm working on a Rust project that makes heavy use of conditional compilation through cargo features. The codebase has chunks of code that are only compiled when certain features are enabled, like this:
+
+#+BEGIN_SRC rust
+#[cfg(feature = "generate_templates")]
+mod cert;
+#[cfg(feature = "generate_templates")]
+mod code_gen;
+#[cfg(feature = "generate_templates")]
+mod csr;
+
+#[cfg(feature = "generate_templates")]
+fn gen_init_devid_csr(out_dir: &str) {
+    // ... implementation
+}
+#+END_SRC
+
+The problem? My trusty Emacs LSP setup was giving me a cold shoulder on all this conditional code. No completions, no error checking, no "go to definition" - basically treating it like it doesn't exist. And technically, it's right! By default, ~rust-analyzer~ only analyzes code with the default set of features enabled.
+
+This makes development quite painful when you're working on feature-gated code. You lose all the IDE benefits that make modern development productive: syntax highlighting works fine, but semantic analysis is completely absent for anything behind a feature flag.
+
+* The root of the problem
+
+When ~rust-analyzer~ starts up, it reads your ~Cargo.toml~ and analyzes your code with the default feature set. If you have code that's conditionally compiled with non-default features, it's essentially invisible to the language server. 
+
+In a complex project, this means you could have entire modules, functions, and types that LSP simply ignores. You're back to the stone age of text editing for those parts of your codebase.
+
+The ~lsp-mode~ documentation mentions ~lsp-rust-features~, but by default it's not set, meaning rust-analyzer will only use the default features from your ~Cargo.toml~.
+
+* Enter .dir-locals.el
+
+Emacs provides a mechanism called directory-local variables that allows you to set variables on a per-directory basis. This is perfect for project-specific LSP configuration.
+
+Create a ~.dir-locals.el~ file in your project root with the following content:
+
+#+BEGIN_SRC elisp
+((nil . ((lsp-rust-features . ["generate_templates"]))))
+#+END_SRC
+
+This tells LSP to analyze the code with the ~generate_templates~ feature enabled. You can add multiple features by extending the list:
+
+#+BEGIN_SRC elisp
+((nil . ((lsp-rust-features . ["generate_templates" "debug_mode" "experimental"]))))
+#+END_SRC
+
+The ~nil~ means this applies to all file types in the directory, but you could be more specific:
+
+#+BEGIN_SRC elisp
+((rustic-mode . ((lsp-rust-features . ["generate_templates"]))))
+#+END_SRC
+
+** A note on the unusual syntax
+
+You might be wondering about those square brackets ~[ ]~ in the configuration. This is because ~lsp-rust-features~ is of type ~lsp-string-vector~, which requires the JSON-like array syntax even in Emacs Lisp configuration. 
+
+Don't try to use a regular Emacs Lisp list like ~'("generate_templates")~ - it won't work! The LSP mode specifically expects the bracket notation. This tripped me up initially, as it looks more like JSON than idiomatic Emacs Lisp. But once you know the quirk, it's easy to remember: square brackets for LSP string vectors.
+
+* The safety warning
+
+Here's where things get interesting. When you first open a file in this directory, Emacs will notice the ~.dir-locals.el~ file and display a warning:
+
+#+BEGIN_EXAMPLE
+The local variables list in /path/to/your/project/.dir-locals.el
+contains values that may not be safe (*).
+
+Do you want to apply it?  You can type
+y  -- to apply the local variables list.
+n  -- to ignore the local variables list.
+!  -- to apply the local variables list, and permanently mark these
+      values (*) as safe (so you will not be asked again).
+#+END_EXAMPLE
+
+Emacs considers this "unsafe" because directory-local variables can execute arbitrary code. In this case, we're just setting a configuration variable, so it's safe to accept. Choose ~!~ to permanently mark these values as safe.
+
+After accepting, you can verify the setting is active by checking the value of ~lsp-rust-features~ in a Rust buffer:
+
+#+BEGIN_SRC elisp
+M-x describe-variable RET lsp-rust-features RET
+#+END_SRC
+
+** Skipping the safety prompt
+
+If you're tired of Emacs asking for permission every time you work on a trusted project, you can manually mark specific directories as safe by adding them to your Emacs configuration:
+
+#+BEGIN_SRC elisp
+(setq safe-local-variable-directories '("/home/arthur/src/caliptra-sw/"))
+#+END_SRC
+
+This tells Emacs to automatically trust any ~.dir-locals.el~ file in that directory without prompting. Just make sure you trust the source - this effectively disables a security feature for that location.
+
+
+* The payoff
+
+After restarting LSP (or reloading the workspace), suddenly all that conditional code springs to life! You get:
+
+- Proper syntax highlighting for feature-gated code
+- Completions and IntelliSense for conditional APIs  
+- Error checking and diagnostics
+- Go-to-definition and find-references working across feature boundaries
+- Proper type information and documentation hovers
+
+The difference is night and day when working on complex Rust projects with extensive use of conditional compilation.
+
+#+BEGIN_SRC rust
+#[cfg(feature = "generate_templates")]
+fn gen_fmc_alias_cert(out_dir: &str) {
+    let mut usage = KeyUsage::default();  // <- Now LSP knows what this is!
+    usage.set_key_cert_sign(true);       // <- And provides completions here!
+    // ...
+}
+#+END_SRC
+
+* Alternative approaches
+
+If you prefer not to use ~.dir-locals.el~, you can also configure this globally in your Emacs configuration:
+
+#+BEGIN_SRC elisp
+(setq lsp-rust-features ["generate_templates"])
+#+END_SRC
+
+But this applies to all Rust projects, which probably isn't what you want.
+
+Mission accomplished! No more fighting with invisible code in feature-gated Rust projects.
