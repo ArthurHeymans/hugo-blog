@@ -2,7 +2,7 @@
 #+date: 2025-07-03T16:29:32+02:00
 #+lastmod: 2025-07-03
 #+categories[]: nix, ai, development
-#+tags[]: aider, mcp, nixos, llm, ai-coding
+#+tags[]: aider mcp nixos llm ai-coding
 #+images[]: 
 #+keyphrase: aider mcp nixos override
 #+description: Using NixOS package overrides to integrate Model Context Protocol support into Aider before upstream merge.
