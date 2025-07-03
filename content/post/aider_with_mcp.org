@@ -13,12 +13,16 @@
 #+private: false
 #+draft: false
 
+In software engineering the part I like the least is the actual typing of coding.
+LLMs provide a nice solution to this problem. With very precise prompting and the right documentation, code, text, ... in the context the code output is very close to how I would write it.
 
-Aider is gaining Model Context Protocol (MCP) support through [[https://github.com/Aider-AI/aider/pull/3937][PR #3937]], but the feature hasn't been merged upstream yet. Rather than waiting or building from source manually, NixOS package overrides provide a clean way to integrate experimental features.
+My preferred tool until now was [[https://aider.chat/][aider]]. It works great, but the development pace seems to have slowed sadly.
+One of the latest innovation in the vibe coding space has been [[https://modelcontextprotocol.io/introduction][model context protocol]].
+MCP is basically a standardized way to provide tools to LLMs and the majority of the AI coding agents are using it.
 
-MCP allows AI assistants to connect to external tools and data sources through a standardized protocol. For Aider, this means access to git operations, file system tools, databases, and custom business logic through MCP servers.
+Aider is gaining Model Context Protocol (MCP) support through [[https://github.com/Aider-AI/aider/pull/3937][PR #3937]], but the feature hasn't been merged upstream yet (the patch has been up a few months). Rather than waiting or building from source manually, NixOS package overrides provide a clean way to integrate experimental features.
 
-** Understanding the Problem
+* Aider with the MCP branch
 
 The challenge was integrating quinlanjager's fork with MCP support into a NixOS system without disrupting the existing package ecosystem.
 
@@ -97,7 +101,7 @@ The result is MCP-enabled Aider that can be configured with external servers:
 
 Another compelling MCP example is [[https://github.com/upstash/context7][Context7]], which solves the problem of outdated documentation in AI-generated code. Simply add ~use context7~ to any coding prompt, and the MCP server fetches current, version-specific documentation directly from source repositories. This eliminates both the frustrating cycle of AI-generated code that references deprecated APIs and the need to manually copy-paste documentation URLs into your prompts, ensuring your AI assistant has access to documentation that matches your exact development environment.
 
-** Benefits of the NixOS Approach
+* Benefits of the NixOS Approach
 
 The override demonstrates NixOS's strength in managing experimental software. Unlike traditional package managers where adding experimental features requires system-wide changes or manual compilation, NixOS package overrides allow surgical modifications to individual packages while preserving the declarative nature of the system.
 
