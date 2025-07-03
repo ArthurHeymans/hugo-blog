@@ -1,0 +1,112 @@
+#+title: Adding MCP support to Aider via NixOS overrides
+#+date: 2025-07-03T16:29:32+02:00
+#+lastmod: 2025-07-03
+#+categories[]: nix, ai, development
+#+tags[]: aider, mcp, nixos, llm, ai-coding
+#+images[]: 
+#+keyphrase: aider mcp nixos override
+#+description: Using NixOS package overrides to integrate Model Context Protocol support into Aider before upstream merge.
+#+seotitle: Adding MCP Support to Aider with NixOS Package Overrides
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+
+Aider is gaining Model Context Protocol (MCP) support through [[https://github.com/Aider-AI/aider/pull/3937][PR #3937]], but the feature hasn't been merged upstream yet. Rather than waiting or building from source manually, NixOS package overrides provide a clean way to integrate experimental features.
+
+MCP allows AI assistants to connect to external tools and data sources through a standardized protocol. For Aider, this means access to git operations, file system tools, databases, and custom business logic through MCP servers.
+
+** Understanding the Problem
+
+The challenge was integrating quinlanjager's fork with MCP support into a NixOS system without disrupting the existing package ecosystem.
+
+** Analyzing the Package Structure
+
+Looking at the upstream package definition revealed the structure needed for an override:
+
+#+begin_src nix
+# pkgs/development/python-modules/aider-chat/default.nix
+buildPythonPackage rec {
+  pname = "aider-chat";
+  version = "0.84.0";
+  
+  src = fetchFromGitHub {
+    owner = "paul-gauthier";
+    repo = "aider";
+    rev = "refs/tags/v${version}";
+    hash = "sha256-...";
+  };
+  
+  dependencies = with python3Packages; [
+    # extensive dependency list
+  ];
+}
+#+end_src
+
+The MCP implementation requires additional dependencies not present in the upstream package: ~httpx-sse~, ~pydantic-settings~, ~sse-starlette~, ~starlette~, ~uvicorn~, and ~mcp~.
+
+** Creating the Override
+
+The solution uses ~overridePythonAttrs~ to replace the source and add dependencies. The package definition for aider-chat was simply put into the context of aider to achieve this result:
+
+#+begin_src nix
+(aider-chat-full.overridePythonAttrs (oldAttrs: {
+  src = pkgs.fetchFromGitHub {
+    owner = "quinlanjager";
+    repo = "aider";
+    rev = "fa78cd7e1d421ccd1c797b2e7dd4abf24802c87d";
+    hash = "sha256-hFhg8Jc3cZSMTC3+ioRqAzYzskeprwJb2mKW99lT9qQ=";
+  };
+  version = "0.85.0";
+  doCheck = false;
+  dependencies = oldAttrs.dependencies ++ (with pkgs.python312Packages; [
+    httpx-sse
+    pydantic-settings
+    sse-starlette
+    starlette
+    uvicorn
+    mcp
+  ]);
+}))
+#+end_src
+
+This override:
+- Replaces the source with the MCP-enabled fork
+- Appends the required MCP dependencies to the existing list
+- Disables tests since we're using experimental code
+- Maintains all other package attributes
+
+** Configuration and Usage
+
+The result is MCP-enabled Aider that can be configured with external servers:
+
+#+begin_src json
+{
+  "mcpServers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git"]
+    }
+  }
+}
+#+end_src
+
+** Context7: Real-time Documentation via MCP
+
+Another compelling MCP example is [[https://github.com/upstash/context7][Context7]], which solves the problem of outdated documentation in AI-generated code. Simply add ~use context7~ to any coding prompt, and the MCP server fetches current, version-specific documentation directly from source repositories. This eliminates both the frustrating cycle of AI-generated code that references deprecated APIs and the need to manually copy-paste documentation URLs into your prompts, ensuring your AI assistant has access to documentation that matches your exact development environment.
+
+** Benefits of the NixOS Approach
+
+The override demonstrates NixOS's strength in managing experimental software. Unlike traditional package managers where adding experimental features requires system-wide changes or manual compilation, NixOS package overrides allow surgical modifications to individual packages while preserving the declarative nature of the system.
+
+This pattern enables rapid adoption of community contributions without waiting for upstream merges, while maintaining the reproducibility and rollback capabilities that make NixOS valuable for development environments.
+
+** Vibe Coding with NixOS
+
+NixOS's configuration-as-code approach makes it uniquely suited for "vibe coding" - the exploratory, experimental development style that AI assistants excel at. Unlike traditional operating systems where system changes require careful manual steps and can leave your environment in unpredictable states, NixOS treats the entire system as a Nix expression that can be modified, tested, and rolled back atomically.
+
+This characteristic makes NixOS an ideal target for AI-generated system configurations. When an AI assistant suggests modifications to your development environment, you can apply them immediately through declarative Nix expressions, test the results, and revert instantly if something goes wrong. Traditional operating systems lack this safety net, making experimental changes risky and time-consuming to undo.
+
+The MCP integration example demonstrates this perfectly - the entire override was implemented as a small Nix expression that could be added, tested, and refined iteratively. The same experimental approach would be much more complex on traditional Linux distributions, requiring manual compilation, dependency management, and careful tracking of system modifications.
