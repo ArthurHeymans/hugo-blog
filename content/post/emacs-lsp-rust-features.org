@@ -104,6 +104,22 @@ If you're tired of Emacs asking for permission every time you work on a trusted 
 
 This tells Emacs to automatically trust any ~.dir-locals.el~ file in that directory without prompting. Just make sure you trust the source - this effectively disables a security feature for that location.
 
+** A better approach: Trust the variable type
+
+Instead of trusting specific directories, there's a more elegant solution that works across all your Rust projects. You can tell Emacs to trust the ~lsp-rust-features~ variable whenever it contains a list value:
+
+#+BEGIN_SRC elisp
+(setq safe-local-variable-values '((lsp-rust-features . listp)))
+#+END_SRC
+
+This approach is much more convenient because:
+
+- It works for any Rust project directory, not just manually specified ones
+- You don't need to update your config every time you work on a new project
+- It's more secure than blanket directory trust - it only trusts this specific variable when it's a list
+- No more safety prompts for ~lsp-rust-features~ in any ~.dir-locals.el~ file
+
+The ~listp~ predicate ensures that Emacs will only consider the variable safe when its value is a list (or vector in this case), which is exactly what we expect for feature specifications.
 
 * The payoff
 
