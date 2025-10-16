@@ -106,6 +106,8 @@ This tells Emacs to automatically trust any ~.dir-locals.el~ file in that direct
 
 ** A better approach: Trust the variable type (update: 12-09-2025)
 
+*UPDATE (2025-10-16): The approach described in this section is incorrect. See [[https://blog.aheymans.xyz/post/emacs-lsp-rust-features-revisited/][Emacs LSP Rust Features Revisited]] for the correct solution.*
+
 Instead of trusting specific directories, there's a more elegant solution that works across all your Rust projects. You can tell Emacs to trust the ~lsp-rust-features~ variable whenever it contains a list value:
 
 #+BEGIN_SRC elisp

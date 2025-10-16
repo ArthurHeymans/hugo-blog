@@ -1,0 +1,194 @@
+#+title: My first emacs package: lsp-cargo-feature-switcher
+#+date: 2025-10-16T18:16:52+02:00
+#+lastmod: 2025-10-16
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+This explains how to properly configure LSP Rust features in Emacs and introduces an interactive tool for managing them.
+
+* Glossary
+
+-    *rust-analyzer*: The LSP server for Rust that provides IDE-like features in editors.
+-    *Cargo features*: Conditional compilation flags in Rust projects defined in Cargo.toml.
+-    *LSP*: Language Server Protocol, providing language intelligence to editors.
+-    *.dir-locals.el*: Emacs mechanism for setting directory-local variables.
+
+* The wrong way and the right way
+
+In my previous post [[https://blog.aheymans.xyz/post/emacs-lsp-rust-features/][Making Emacs LSP work with Rust conditional features]], I suggested using ~safe-local-variable-values~ to bypass Emacs' safety prompts for LSP rust features. That approach was wrong. The code I suggested:
+
+#+BEGIN_SRC elisp
+(setq safe-local-variable-values '((lsp-rust-features . listp)))
+#+END_SRC
+
+does not work as intended. The ~safe-local-variable-values~ variable expects actual values, not predicates. What you end up with is Emacs considering only the literal value ~listp~ as safe, which is not what we want.
+
+The correct approach is to use the ~put~ function to mark these variables as safe with a predicate:
+
+#+BEGIN_SRC elisp
+(put 'lsp-rust-features 'safe-local-variable #'vectorp)
+(put 'lsp-rust-no-default-features 'safe-local-variable #'booleanp)
+#+END_SRC
+
+This tells Emacs that ~lsp-rust-features~ is safe when it contains a vector (which is what lsp-mode expects), and ~lsp-rust-no-default-features~ is safe when it contains a boolean value. The ~put~ function associates a property with a symbol. Here, the ~'safe-local-variable~ property is set to a predicate function that validates the variable's value.
+
+When Emacs encounters these variables in a ~.dir-locals.el~ file, it will call the predicate function. If the function returns non-nil, the variable is considered safe and Emacs will not prompt you. Using ~#'vectorp~ ensures that only vector values are accepted for ~lsp-rust-features~, which matches what the LSP configuration expects. Similarly, ~#'booleanp~ ensures ~lsp-rust-no-default-features~ only accepts ~t~ or ~nil~.
+
+This is much more secure than blindly trusting entire directories or specific values. It validates that the variable type matches what you expect, preventing malicious or malformed ~.dir-locals.el~ files from executing arbitrary code while still providing a smooth workflow for legitimate Rust projects.
+
+* A bit of history on managing Rust features in Emacs
+
+I was not around when LSP first came to Emacs, so this part could be inaccurate. It should however paint a picture of the challenges of working with conditional compilation in Rust.
+
+** The problem: invisible code
+
+When working on Rust projects with extensive use of cargo features, a common frustration emerges. The language server only analyzes code with the default feature set enabled. Code behind non-default features becomes invisible to LSP. No completions, no type checking, no go-to-definition. For projects with significant feature-gated code, this makes development quite painful.
+
+** The manual solution: .dir-locals.el
+
+Emacs provides directory-local variables through ~.dir-locals.el~ files. These allow setting variables on a per-directory basis, perfect for project-specific LSP configuration. You can manually configure which features rust-analyzer should analyze:
+
+#+BEGIN_SRC elisp
+((rustic-mode . ((lsp-rust-features . ["generate_templates" "experimental"])
+                 (lsp-rust-no-default-features . nil))))
+#+END_SRC
+
+This works, but requires manually editing the file and knowing which features exist in your Cargo.toml. For projects with many features or features that change frequently, this becomes tedious.
+
+** The interactive solution: lsp-cargo-feature-switcher
+
+To solve this, I wrote [[https://github.com/ArthurHeymans/lsp-cargo-feature-switcher][lsp-cargo-feature-switcher]]. It provides an interactive interface for toggling Cargo features through ~M-x cargo-features-toggle-menu~.
+
+* How lsp-cargo-feature-switcher works
+
+The package automates what was previously a manual process. It has several key components:
+
+** Finding Cargo.toml
+
+The first challenge is locating the project's ~Cargo.toml~:
+
+#+BEGIN_SRC elisp
+(defun cargo-features-find-closest-toml (&optional dir)
+  "Find the closest Cargo.toml file starting from DIR or current directory."
+  (let ((start-dir (or dir default-directory)))
+    (locate-dominating-file start-dir "Cargo.toml")))
+#+END_SRC
+
+This searches upward from the current directory until it finds ~Cargo.toml~, similar to how git finds the repository root.
+
+** Parsing available features
+
+The package uses [[https://github.com/ArthurHeymans/emacs-toml][emacs-toml]] (a fork with additional TOML support) to parse ~Cargo.toml~. The ~cargo-features-parse-available~ function extracts the features section and analyzes dependencies:
+
+#+BEGIN_SRC elisp
+(defun cargo-features-parse-available (cargo-toml-path)
+  "Parse available features from Cargo.toml at CARGO-TOML-PATH.
+Returns a list of (feature-name type dependency-features always-enabled-crates)."
+  (when (and cargo-toml-path (file-exists-p cargo-toml-path))
+    (let* ((parsed-toml (toml:read-from-file cargo-toml-path))
+           (features-section (assoc "features" parsed-toml))
+           ;; ... parsing logic
+           ))
+#+END_SRC
+
+It performs a two-pass analysis. First, it identifies which features are enabled by the "default" feature. Second, it extracts all features and their dependencies, marking those always enabled by default.
+
+This handles the various ways features can be defined in TOML: as strings, lists, or vectors.
+
+** Reading current LSP configuration
+
+Before presenting the menu, the tool reads the current state from ~.dir-locals.el~:
+
+#+BEGIN_SRC elisp
+(defun cargo-features-get-current-from-file (dir-locals-file)
+  "Get current LSP rust features and no-default-features setting from DIR-LOCALS-FILE.
+Returns (features . no-default-features)."
+  (when (and dir-locals-file (file-exists-p dir-locals-file))
+    (condition-case nil
+        (let* ((dir (file-name-directory dir-locals-file))
+               (class (dir-locals-read-from-dir dir))
+               (variables (when class (dir-locals-get-class-variables class)))
+               (rustic-config (assoc 'rustic-mode variables))
+               ;; ... extraction logic
+               ))
+      (error nil))))
+#+END_SRC
+
+This uses Emacs' built-in directory-local variable system to read the current configuration, extracting both ~lsp-rust-features~ and ~lsp-rust-no-default-features~.
+
+** Updating configuration and restarting LSP
+
+When a feature is toggled, the package updates ~.dir-locals.el~:
+
+#+BEGIN_SRC elisp
+(defun cargo-features-update-dir-locals (features no-default-features &optional dir)
+  "Update .dir-locals.el with FEATURES list and NO-DEFAULT-FEATURES in DIR or current directory."
+  (let* ((cargo-dir (or dir (cargo-features-find-closest-toml)))
+         (dir-locals-file (expand-file-name ".dir-locals.el" cargo-dir))
+         (default-directory cargo-dir))
+    (save-window-excursion
+      (modify-dir-local-variable 'rustic-mode 'lsp-rust-features (vconcat features) 'add-or-replace dir-locals-file)
+      (modify-dir-local-variable 'rustic-mode 'lsp-rust-no-default-features no-default-features 'add-or-replace dir-locals-file)
+      (save-buffer))
+    ;; ... revert and restart logic
+    ))
+#+END_SRC
+
+After updating the file, it reverts any buffers visiting it and restarts the LSP workspace in all affected Rust buffers. This ensures the changes take effect immediately without manual intervention.
+
+** The interactive menu
+
+The ~cargo-features-toggle-menu~ function ties it all together:
+
+#+BEGIN_SRC elisp
+(defun cargo-features-toggle-menu ()
+  "Interactive menu to toggle Cargo features."
+  (interactive)
+  (let* ((cargo-dir (cargo-features-find-closest-toml))
+         (cargo-toml (when cargo-dir (expand-file-name "Cargo.toml" cargo-dir))))
+    
+    (unless cargo-toml
+      (user-error "No Cargo.toml found in current or parent directories"))
+    
+    ;; Parse features, get current state, present menu
+    ;; ...
+    ))
+#+END_SRC
+
+It presents a formatted list of features showing which are currently enabled and their dependencies. Selecting a feature toggles it on or off. Selecting "default" toggles ~lsp-rust-no-default-features~.
+
+The formatting makes it clear what's enabled:
+
+#+BEGIN_EXAMPLE
+generate_templates        [ENABLED]            dep: [ cert code_gen ]
+experimental              [DEFAULT ENABLED]     
+debug_mode                                      dep: [ logging ]
+#+END_EXAMPLE
+
+* The payoff
+
+With the correct safety configuration and the interactive feature switcher, managing Rust feature-gated code in Emacs becomes straightforward. Add the safety predicates to your Emacs configuration:
+
+#+BEGIN_SRC elisp
+(put 'lsp-rust-features 'safe-local-variable #'vectorp)
+(put 'lsp-rust-no-default-features 'safe-local-variable #'booleanp)
+#+END_SRC
+
+Then use ~M-x cargo-features-toggle-menu~ to interactively enable the features you're working on. The LSP server restarts automatically, and suddenly all that conditional code becomes visible. Completions work, type checking works, go-to-definition works.
+
+No more fighting with invisible code in feature-gated Rust projects.
+
+* References
+
+- [[https://github.com/ArthurHeymans/lsp-cargo-feature-switcher][lsp-cargo-feature-switcher]]
+- [[https://blog.aheymans.xyz/post/emacs-lsp-rust-features/][Making Emacs LSP work with Rust conditional features (incorrect approach)]]
+- [[https://www.gnu.org/software/emacs/manual/html_node/elisp/Directory-Local-Variables.html][Emacs Directory Local Variables]]
