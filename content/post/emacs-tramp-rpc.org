@@ -1,0 +1,160 @@
+#+title: Experimenting with a faster TRAMP backend using Rust and JSON-RPC
+#+date: 2026-01-16T11:23:08+01:00
+#+lastmod: 2026-01-16
+#+categories[]: emacs rust
+#+tags[]: emacs tramp rust rpc
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+TRAMP is one of Emacs' killer features. The ability to transparently edit files on remote machines, run shells, and use version control as if everything were local is remarkable. The implementation is impressively portable - it works over SSH, sudo, docker, and countless other methods by cleverly parsing shell command output.
+
+I've been experimenting with an alternative approach that trades some of TRAMP's universality for speed improvements in the common SSH use case. This is very much an alpha project and nowhere near as battle-tested as TRAMP, but the early results are promising enough that I wanted to share it and get feedback.
+
+* How traditional TRAMP works
+
+TRAMP's design is elegant in its simplicity: it pipes shell commands over the connection and parses their text output. This works on virtually any Unix-like system without installing anything on the remote host. Need to check if a file exists? Run ~test -e /path/to/file~. Need file attributes? Parse the output of ~ls -la~.
+
+This approach has served the Emacs community well for decades. The trade-off is that each operation involves multiple round-trips and text parsing, which can add latency on high-latency connections or when performing many operations in sequence.
+
+* The tramp-rpc experiment
+
+The idea behind tramp-rpc is to run a small server on the remote machine that speaks JSON-RPC instead of parsing shell output. This gives structured responses and enables request batching.
+
+#+begin_example
+┌─────────────┐     SSH/JSON-RPC     ┌──────────────────┐
+│   Emacs     │ ◄──────────────────► │ tramp-rpc-server │
+│ (tramp-rpc) │   newline-delimited  │     (Rust)       │
+└─────────────┘   JSON over stdin/   └──────────────────┘
+                     stdout                    │
+                                               ├─► Native syscalls
+                                               ├─► Process spawning
+                                               └─► PTY management
+#+end_example
+
+Usage is straightforward - use the ~rpc~ method instead of ~ssh~:
+
+#+begin_src 
+/rpc:user@host:/path/to/file
+#+end_src
+
+The obvious downside is that you need to deploy a binary to the remote host. The tramp-rpc-deploy system tries to make this painless by automatically detecting the remote architecture and transferring a pre-built binary, but it's still an extra dependency compared to TRAMP's zero-install approach.
+
+* Why Rust?
+
+The server needs to be a single static binary that works across different Linux and macOS systems. Rust makes this straightforward:
+
+- Static binaries with no runtime dependencies
+- Cross-compilation to x86_64 and aarch64
+- Async I/O with Tokio for handling concurrent requests
+- The type system helps catch protocol mismatches early
+
+The resulting binary is around 2MB.
+
+* Some early benchmarks
+
+On my setup (testing against a local NixOS machine), I'm seeing improvements like:
+
+| Operation       | TRAMP-RPC | Traditional SSH | Speedup |
+|-----------------+-----------+-----------------+---------|
+| file-exists-p   | 4.1 ms    | 56.1 ms         | ~14x    |
+| write-region    | 4.1 ms    | 231.9 ms        | ~57x    |
+| directory-files | 4.1 ms    | 43.1 ms         | ~11x    |
+| copy-file       | 21.9 ms   | 189.7 ms        | ~9x     |
+
+These numbers will vary depending on your network latency and system configuration. I'd be curious to hear what others see on their setups.
+
+* Batch operations
+
+One area where the RPC approach helps is batching. When listing a directory, Emacs often needs to stat many files. With tramp-rpc, these can be bundled into a single request:
+
+#+begin_src elisp
+(tramp-rpc--call-batch vec
+  '(("file.stat" . ((path . "/foo")))
+    ("file.stat" . ((path . "/bar")))
+    ("file.stat" . ((path . "/baz")))))
+#+end_src
+
+This reduces the number of round-trips for operations that touch many files.
+
+* PTY support
+
+Terminal emulators like vterm and eat need proper pseudo-terminal support. The server implements PTY management using Unix ~openpty~, which means remote terminal sessions should work correctly:
+
+#+begin_src rust
+pub struct PtyProcess {
+    master_fd: OwnedFd,
+    child_pid: Pid,
+    // ...
+}
+#+end_src
+
+This handles window resizing and signal delivery to foreground processes.
+
+* Current limitations
+
+This is alpha software with plenty of rough edges:
+
+- No multi-hop (jump host) support
+- No Windows remote host support  
+- Only tested on a handful of systems
+- The deployment system could be more robust
+- Error handling and edge cases need more work
+- Nowhere near TRAMP's level of testing and real-world usage
+
+TRAMP has been refined over many years with input from countless users. This project is just getting started.
+
+* Architecture overview
+
+The Emacs side has three main files:
+
+- ~tramp-rpc.el~: The TRAMP backend implementing file name handlers
+- ~tramp-rpc-protocol.el~: JSON-RPC 2.0 encoding/decoding  
+- ~tramp-rpc-deploy.el~: Binary deployment to remote hosts
+
+The Rust server uses Tokio for async I/O and processes requests concurrently:
+
+#+begin_src rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+    let mut tasks = JoinSet::new();
+
+    while let Some(line) = lines.next_line().await? {
+        let request: Request = serde_json::from_str(&line)?;
+        tasks.spawn(handle_request(request));
+    }
+    // ...
+}
+#+end_src
+
+* Getting started
+
+The project requires Emacs 30.1 or later. Remote hosts need to be Linux or macOS (x86_64 or aarch64).
+
+#+begin_src elisp
+(add-to-list 'load-path "/path/to/tramp-rpc/lisp")
+(require 'tramp-rpc)
+#+end_src
+
+Then use ~/rpc:user@host:/path~ instead of ~/ssh:user@host:/path~.
+
+* Looking for feedback and contributions
+
+If you try this out, I'd love to hear about your experience:
+
+- Does it work on your setup? What issues did you hit?
+- Are there operations that are particularly slow or broken?
+- What features would make this more useful for your workflow?
+- Ideas for improving the deployment experience?
+
+Contributions are very welcome, whether that's bug reports, documentation improvements, or code. The project is at an early stage where input from different use cases would be especially valuable.
+
+The code is at [[https://github.com/aheymans/tramp-rpc][github.com/aheymans/tramp-rpc]].
