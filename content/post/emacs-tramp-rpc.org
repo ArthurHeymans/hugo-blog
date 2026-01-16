@@ -157,4 +157,4 @@ If you try this out, I'd love to hear about your experience:
 
 Contributions are very welcome, whether that's bug reports, documentation improvements, or code. The project is at an early stage where input from different use cases would be especially valuable.
 
-The code is at [[https://github.com/aheymans/tramp-rpc][github.com/aheymans/tramp-rpc]].
+The code is at [[https://github.com/aheymans/tramp-rpc][github.com/aheymans/emacs-tramp-rpc]].
