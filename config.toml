@@ -12,7 +12,8 @@ ignoreErrors = ["error-remote-getjson"]
 googleAnalytics = "G-X06JREDPPQ"
 
 # ------------------------------
-theme = "terminal"
+# theme = "terminal"
+theme = "emacs"
 title = "Arthur's blog"
 
 [pagination]
@@ -72,8 +73,10 @@ title = "Arthur's blog"
   [markup.goldmark]
     [markup.goldmark.renderer]
       unsafe = true
-#  [markup.highlight]
-#    lineNos = true
+  [markup.highlight]
+    noClasses = false
+    lineNos = false
+    style = "monokai"
 
 [languages]
   [languages.en]
