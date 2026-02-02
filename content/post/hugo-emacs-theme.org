@@ -1,0 +1,32 @@
+#+title: Vibe Coding an Emacs-Style Hugo Theme
+#+date: 2026-02-02
+#+categories[]:
+#+tags[]: emacs hugo theme vibe-coding
+#+images[]:
+#+keyphrase:
+#+description: A Hugo theme that looks and feels like Emacs
+#+seotitle:
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+I've been using [[https://github.com/panr/hugo-theme-terminal][hugo-theme-terminal]] for my blog and really liked its clean, terminal-inspired aesthetic. But as someone who spends most of their day in Emacs, I wanted something that felt more like home.
+
+So I vibe coded an Emacs-style theme with Claude. The entire thing - HTML templates, CSS, JavaScript interactions - was built through conversation with AI.
+
+* Features
+
+- Dired-style article list with reading time, word count, and dates
+- Window splitting with =C-x 2= (vertical) and =C-x 3= (horizontal)
+- Navigate with =n/p=, open with =RET=, go back with =q=
+- Modus Vivendi (dark) and Modus Operandi (light) themes, toggle with =t=
+- Emacs modeline showing buffer name, scroll position, and mode
+- Even has a working menu bar
+
+* The Result
+
+The theme is available at [[https://github.com/ArthurHeymans/hugo-emacs-theme][github.com/ArthurHeymans/hugo-emacs-theme]].
+
+One less reason to leave Emacs - now even my blog looks like it.
