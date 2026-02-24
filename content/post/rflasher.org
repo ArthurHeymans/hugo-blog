@@ -1,0 +1,145 @@
+#+title: Rust firmware tools: rflasher and rem100
+#+date: 2026-02-24T17:24:40+01:00
+#+lastmod: 2021-09-28
+#+categories[]: 
+#+tags[]: 
+#+images[]: 
+#+keyphrase: 
+#+description:
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+After the [[../serprog_in_rust][serprog adventures]] with Embassy on microcontrollers, it was time to tackle the host side of firmware tooling. Two tools that come up constantly in firmware development are [[https://flashprog.org/wiki/Flashprog][flashprog]] for reading and writing SPI flash chips, and the [[https://www.dediprog.com/product/EM100Pro-G2][Dediprog EM100Pro]] tool for controlling the EM100 SPI flash emulator. Both are C tools that have been around for a while. We ported both to Rust: [[https://github.com/9elements/rflasher][rflasher]] and [[https://github.com/ArthurHeymans/rem100][rem100]]. On top of that, both now have browser-based WebUIs that run as pure WASM with no server-side processing.
+
+* rflasher: flashprog in Rust
+
+rflasher is a from-scratch Rust reimplementation of flashprog, the userspace tool that talks to flash programmers and does the actual reading, writing and erasing of SPI NOR flash chips. It supports a wide range of programmers: CH341A, CH347, Dediprog, FTDI MPSSE, serprog, Raiden debug hardware, Linux spidev and even Intel/AMD internal SPI controllers. The chip database covers 482 flash chips from 22 vendors, defined in human-readable RON files.
+
+flashprog is a solid tool but it's a large C codebase that has grown organically over many years. The usual reasons for a Rust rewrite apply here: memory safety, better abstractions and a more pleasant development experience. But the real motivation was architectural. rflasher is built as a Cargo workspace with 17 crates, each programmer gets its own crate, and the core library is =no_std= compatible. This means the same core code can run on a full Linux system, on a bare metal microcontroller, or in the browser.
+
+The key trick is the =maybe-async= crate. Every trait and function in the core is written with =async= syntax, but a feature flag controls whether it compiles as blocking sync code or actual async:
+
+#+begin_src rust
+#[maybe_async(AFIT)]
+pub trait SpiMaster {
+    async fn execute(&mut self, cmd: &mut SpiCommand<'_>) -> Result<()>;
+    async fn delay_us(&mut self, us: u32);
+    fn features(&self) -> SpiFeatures;
+    fn max_read_len(&self) -> usize;
+    fn max_write_len(&self) -> usize;
+}
+#+end_src
+
+The CLI binary enables =is_sync= and gets straightforward blocking code. The WASM build leaves it async and gets browser-friendly futures. One codebase, two worlds.
+
+** From one giant C file to RON
+
+In flashprog, every supported chip is defined in a single =flashchips.c= file. It's nearly 27,000 lines of C struct initializers, one after another. Adding a new chip means carefully editing this massive file, getting the struct fields right, and hoping you don't break the surrounding entries. Reviewing changes in that file is not fun either.
+
+rflasher replaces this with [[https://github.com/ron-rs/ron][RON]] (Rusty Object Notation) files, one per vendor. Each chip definition is readable and self-contained:
+
+#+begin_src ron
+(
+    name: "W25Q16.V",
+    device_id: 0x4015,
+    total_size: MiB(2),
+    features: (wrsr_wren: true, fast_read: true, dual_io: true,
+               quad_io: true, otp: true, status_reg_2: true, qe_sr2: true),
+    voltage: (min: 2700, max: 3600),
+    erase_blocks: [
+        (opcode: 0x20, regions: [(size: KiB(4), count: 512)]),
+        (opcode: 0x52, regions: [(size: KiB(32), count: 64)]),
+        (opcode: 0xD8, regions: [(size: KiB(64), count: 32)]),
+        (opcode: 0x60, regions: [(size: MiB(2), count: 1)]),
+        (opcode: 0xC7, regions: [(size: MiB(2), count: 1)]),
+    ],
+    tested: (probe: Ok, read: Ok, erase: Ok, write: Ok),
+),
+#+end_src
+
+Compare that to the C equivalent with its function pointers, magic macros and implicit conventions. The RON format is type-safe, human-friendly with =MiB(2)= instead of raw byte counts, and the per-vendor split means adding a new Winbond chip only touches =winbond.ron=. It also gives finegrained control: distributions or embedded builds can ship only the vendor files they actually need, instead of compiling in all 482 chips. At build time, the RON files can either be loaded from disk or compiled into the binary via a codegen crate.
+
+* rem100: the EM100Pro tool in Rust
+
+The EM100Pro is a SPI flash emulator. You plug it in where a SPI flash chip would normally sit, and it presents its internal SDRAM as the flash contents to the SoC. Loading a new firmware image over USB takes seconds instead of minutes with a real flash programmer. It's invaluable for firmware development because it dramatically shortens the edit-compile-flash-boot cycle.
+
+The original =em100= C tool by Google handles all the USB communication: loading images into the device, starting and stopping emulation, selecting which chip to emulate (from a database of ~600 chips), reading SPI traces, updating firmware, and more.
+
+[[https://github.com/ArthurHeymans/rem100][rem100]] is a Rust port of this tool. Unlike rflasher which uses a workspace of 17 crates, rem100 is a single crate with feature flags that select between the CLI (=clap=), native GUI, and WASM builds. The sync/async split is handled with =#[cfg(target_arch = "wasm32")]= gating rather than =maybe-async=: a blocking =Em100= struct for the CLI and an async =Em100Async= for the browser.
+
+** A Scheme REPL for SPI hacking
+
+This is probably my favorite part of rflasher. It embeds a [[https://github.com/mattwparas/steel][Steel]] Scheme REPL for interactive SPI manipulation. The idea is borrowed from the GNU project's approach with GUILE: give users a full scripting language to extend and control the application, rather than inventing yet another ad-hoc configuration format or limited CLI.
+
+Steel is a Scheme implementation written in Rust which makes it easy to expose Rust functions as Scheme builtins. The REPL registers two modules: =rflasher/spi= for SPI operations and =rflasher/spi25= for all the standard JEDEC opcode constants.
+
+You can probe chips interactively, poke at registers, or script entire flash workflows:
+
+#+begin_src scheme
+;; Identify the chip
+λ > (read-jedec-id)
+=> (239 16404)  ; Winbond W25Q80
+
+;; Read status registers
+λ > (read-status1)
+=> 0
+
+;; Read the first 32 bytes
+λ > (bytes->hex (spi-read READ 0 32))
+=> "ff ff ff ff ff ff ff ff ..."
+
+;; Erase a sector and program it
+λ > (sector-erase #x1000)
+λ > (wait-ready 1000000)
+λ > (define data (random-bytes 256))
+λ > (page-program #x1000 data)
+=> #t
+
+;; Verify
+λ > (equal? data (spi-read READ #x1000 256))
+=> #t
+#+end_src
+
+Everything from low-level raw SPI commands (=spi-execute=, =spi-read-reg=, =spi-write-reg=) to high-level helpers (=chip-erase=, =page-program=, =write-enable=) is available. Multi-IO modes like dual and quad SPI are exposed too. The REPL has syntax highlighting, tab completion for all registered functions and bracket matching, so it's actually pleasant to use. You can also run scripts non-interactively with =rflasher repl -p ch341a --script my_script.scm=.
+
+This is especially useful for development and debugging. When you're bringing up a new board or investigating write protection issues, being able to just poke at individual SPI registers from a Lisp prompt is a lot faster than recompiling a C tool every time.
+
+A concrete example: I used the REPL to develop [[https://github.com/ArthurHeymans/tang_20k_spi_flash][tang_20k_spi_flash]], an FPGA-based SPI flash emulator for the Sipeed Tang Nano 20K. The FPGA impersonates a real flash chip (like a Winbond W25Q64FV) using its internal SDRAM, so a SoC that boots from SPI flash can boot from the emulator instead. When developing something like that, having tight control over exactly what gets sent over the SPI data lines is crucial. The REPL let me send individual commands, verify JEDEC ID responses, test edge cases in the erase and page program logic, all interactively without writing throwaway test programs.
+
+* WASM WebUIs: firmware tools in the browser
+
+Firmware is a daunting field. The tools are often Linux-only, require specific kernel modules or udev rules, and the command line interface can be intimidating for people who just want to flash a BIOS update or load an image into their EM100. To lower this barrier, both rflasher and rem100 have WASM ports that run entirely in the browser. No server-side processing, no installation, just open the page and go.
+
+Both WebUIs are built with [[https://www.egui.rs/][egui]] via eframe, compiled to =wasm32-unknown-unknown= with [[https://trunkrs.dev/][Trunk]], and deployed to GitHub Pages. They share the same architecture: the egui render loop runs on an HTML canvas, async operations are spawned with =wasm_bindgen_futures::spawn_local()=, and state flows between the UI and async tasks through =Rc<RefCell<SharedState>>=.
+
+The rflasher WebUI at [[https://rflasher.9elements.com][rflasher.9elements.com]] supports 5 programmer types: serprog over WebSerial, and CH341A, CH347, FTDI MPSSE and Dediprog over WebUSB. The rem100 WebUI at [[https://rem100.9elements.com][rem100.9elements.com]] lets you connect to an EM100Pro, select a chip to emulate, load firmware images, and start/stop emulation, all from Chrome or Edge.
+
+** The nusb WebUSB rebase
+
+Getting USB to work from Rust in the browser required some plumbing. [[https://github.com/kevinmehall/nusb][nusb]] is a pure Rust cross-platform USB library, but it did not have a WebUSB backend. An existing effort to add WebUSB support had gone stale relative to upstream, so a [[https://github.com/ArthuRheymans/nusb/tree/task/webusb-rebased][rebase of the WebUSB port]] onto current nusb was needed to be able to use USB in the browser from Rust.
+
+With that in place, when either tool compiles to =wasm32-unknown-unknown=, nusb uses =navigator.usb= (the WebUSB API) instead of platform-specific USB backends. The programmer code stays identical. A =request_device()= call triggers the browser's USB device picker:
+
+#+begin_src rust
+match Ch341a::request_device().await {
+    Ok(device_info) => match Ch341a::open(device_info).await {
+        Ok(programmer) => { /* ready to flash */ }
+        Err(e) => log::error!("Failed to open: {e}"),
+    },
+    Err(e) => log::error!("No device selected: {e}"),
+}
+#+end_src
+
+Both tools depend on the same nusb fork. rflasher additionally uses a [[https://github.com/ArthurHeymans/rs-ftdi/tree/WASM][pure-Rust FTDI library]] that also builds on nusb, avoiding any C dependencies that would not compile to WASM.
+
+Long operations like reading or writing a full flash chip yield to the browser event loop via =setTimeout= to keep the UI responsive, and progress updates flow through shared state between the egui render loop and the async tasks.
+
+* Conclusion
+
+Both tools are still young but already usable for daily work. The WebUIs at [[https://rflasher.9elements.com][rflasher.9elements.com]] and [[https://rem100.9elements.com][rem100.9elements.com]] are good starting points if you want to try them without installing anything. For more advanced use, the rflasher Steel REPL is a powerful way to explore SPI flash chips interactively.
+
+The code is on GitHub: [[https://github.com/9elements/rflasher][rflasher]], [[https://github.com/ArthurHeymans/rem100][rem100]]. Contributions and bug reports are welcome.
