@@ -13,7 +13,7 @@
 #+private: false
 #+draft: false
 
-So [[https://github.com/9elements/NORbert][NORbert]] has an FT245 transport now. It also does dual and quad I/O SPI reads, and the chip identity is runtime configurable. Here's what happened since the last post.
+So [[https://github.com/ArthurHeymans/NORbert][NORbert]] has an FT245 transport now. It also does dual and quad I/O SPI reads, and the chip identity is runtime configurable. Here's what happened since the last post.
 
 * FT245 via FT2232H
 
