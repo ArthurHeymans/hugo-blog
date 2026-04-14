@@ -18,7 +18,7 @@ This is how that works and what you can do with it.
 
 * The skill
 
-OpenClaw has a skill system — reusable modules that teach the agent how to do specific things. I wrote an org-mode skill that gives the agent programmatic access to Emacs in batch mode. The agent runs Emacs with =--batch --eval=, loads org, and operates on your files directly. The skill lives at [[https://github.com/ArthurHeymans/.doom.d/blob/main/skills/org-mode.md][github.com/ArthurHeymans/.doom.d/skills/org-mode.md]].
+OpenClaw has a skill system — reusable modules that teach the agent how to do specific things. There wasn't an org-mode skill available on the skill registry ([[https://clawhub.com][ClawHub]]), so I wrote one. It gives the agent programmatic access to Emacs in batch mode. The agent runs Emacs with =--batch --eval=, loads org, and operates on your files directly. The skill lives at [[https://github.com/ArthurHeymans/.doom.d/blob/main/skills/org-mode.md][github.com/ArthurHeymans/.doom.d/skills/org-mode.md]].
 
 I use Doom Emacs on my desktop with a literate =config.org=. Running the same Doom config on the server means the agent gets the exact same org setup — same agenda files, same capture templates, same habits — without duplicating configuration.
 
