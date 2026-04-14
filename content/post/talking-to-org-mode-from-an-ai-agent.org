@@ -2,7 +2,7 @@
 #+date: 2026-04-14T11:00:00+02:00
 #+categories[]: emacs
 #+tags[]: emacs org-mode openclaw
-#+images[]:
+#+images[]: /images/org-mode-agent.jpg
 #+keyphrase:
 #+description: Using OpenClaw with an Emacs skill to interact with org-mode programmatically — agenda, habits, captures, and more
 #+seotitle: Talking to Org Mode from an AI Agent
