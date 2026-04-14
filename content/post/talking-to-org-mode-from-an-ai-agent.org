@@ -10,7 +10,7 @@
 #+math: false
 #+slider: false
 #+private: false
-#+draft: true
+#+draft: false
 
 I have an AI assistant running on my server via [[https://github.com/openclaw/openclaw][OpenClaw]]. It lives in Telegram, can run commands, read files, and talk to my Emacs. The point isn't having Emacs on the server — it's having an agent that can *interact with my org-mode life* from a chat window.
 
