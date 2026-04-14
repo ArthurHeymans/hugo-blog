@@ -6,4 +6,4 @@
 	url = https://github.com/panr/hugo-theme-terminal.git
 [submodule "themes/emacs"]
 	path = themes/emacs
-	url = git@github.com:ArthurHeymans/hugo-emacs-theme.git
+	url = https://github.com/ArthurHeymans/hugo-emacs-theme
