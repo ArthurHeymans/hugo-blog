@@ -1,0 +1,73 @@
+#+title: Talking to Org Mode from an AI Agent
+#+date: 2026-04-14T11:00:00+02:00
+#+categories[]: emacs
+#+tags[]: emacs org-mode openclaw
+#+images[]:
+#+keyphrase:
+#+description: Using OpenClaw with an Emacs skill to interact with org-mode programmatically — agenda, habits, captures, and more
+#+seotitle: Talking to Org Mode from an AI Agent
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+I have an AI assistant running on my server via [[https://github.com/openclaw/openclaw][OpenClaw]]. It lives in Telegram, can run commands, read files, and talk to my Emacs. The point isn't having Emacs on the server — it's having an agent that can *interact with my org-mode life* from a chat window.
+
+This is how that works and what you can do with it.
+
+* The skill
+
+OpenClaw has a skill system — reusable modules that teach the agent how to do specific things. There wasn't an org-mode skill available on the skill registry ([[https://clawhub.com][ClawHub]]), so I wrote one. It gives the agent programmatic access to Emacs in batch mode. The agent runs Emacs with =--batch --eval=, loads org, and operates on your files directly. The skill lives at [[https://github.com/ArthurHeymans/.doom.d/blob/main/skills/org-mode.md][github.com/ArthurHeymans/.doom.d/skills/org-mode.md]].
+
+I use Doom Emacs on my desktop with a literate =config.org=. Running the same Doom config on the server means the agent gets the exact same org setup — same agenda files, same capture templates, same habits — without duplicating configuration.
+
+* What it can do
+
+** Agenda queries
+
+" What's on my agenda today?" — the agent reads your =org-agenda-files=, parses scheduled items, deadlines, and habits, and gives you a structured summary in chat. You get the same view you'd get in Emacs, just formatted for Telegram.
+
+** Habit tracking
+
+The agent reads =org-habit= data — completion percentages, streaks, last-done dates. "How are my habits?" returns a blunt summary of what's done and what's falling behind.
+
+It can also modify habits. "Change 'Ijsbad nemen' to 'Ijsbad/koude douche' and make it a daily habit" — the agent edits the org file, sets the TODO state, configures the schedule (=.+1d/2d=), and adds the =:STYLE: habit= property.
+
+** Org captures
+
+New notes, daily entries, meeting templates — all through =org-capture= invoked programmatically. The agent can create a capture entry in any of your configured templates, or you can define new ones on the fly.
+
+** TODO management
+
+Mark items done, change priorities, refile entries between files. "Mark the Proximus invoice as DONE" — the agent finds the heading, changes the TODO state, and logs the completion time.
+
+** Filetag-based agenda filtering
+
+My agenda uses filetags to determine which files appear in =org-agenda-files=. Files with TODO items get auto-tagged with =todo=; when all items are done, the tag is removed. The agent maintains this automatically — every time it reads the agenda, it re-scans for the current set of active files.
+
+* What else could it do
+
+Some things I haven't set up yet but that are straightforward with the skill:
+
+- **Clock in/out**: "Start clocking time on the NORbert project" — the agent runs =org-clock-in= on the right heading. "How much time did I spend on firmware this week?" — it reads clock tables.
+- **Refiling**: "Move this task to the work file" — the agent uses =org-refile= to move headings between files.
+- **Daily review**: A cron job that runs every evening, summarizes what you completed, what's still open, what's overdue, and sends it as a digest.
+- **Meeting notes**: "Start a meeting note with Microsoft daily" — creates a capture with participants, agenda, and action items template.
+- **Recurring check-ins**: "Remind me every Monday to review my open PRs" — the agent creates a scheduled TODO item that appears in the agenda.
+- **Linking**: "Link this note to the NORbert project" — the agent inserts an org-link between nodes.
+- **Property editing**: "Set the effort on this task to 30 minutes" — edits =:Effort:= properties on headings.
+- **Archive old items**: "Archive everything in work.org that's been DONE for more than 30 days" — batch =org-archive= operations.
+- **Search**: "Find all notes mentioning FPGA" — the agent runs =org-ql= or =org-node-grep= across your roam directory and returns matches.
+
+* The setup
+
+The prerequisites are minimal:
+
+1. Doom Emacs installed on the machine running OpenClaw (using your existing config)
+2. Your org files accessible under ~/org/ (I use Syncthing to keep them in sync between desktop and server)
+3. The [[https://github.com/ArthurHeymans/.doom.d/blob/main/skills/org-mode.md][org-mode skill]] from my Doom config
+
+The skill handles the Emacs invocation — you just talk to the agent in chat. It runs =emacs --batch= under the hood, evaluates elisp expressions against your config, and parses the results back into the conversation.
+
+No new tools. No new formats. Org mode as it was designed to work — just with an agent at the keyboard instead of you.
