@@ -1,0 +1,186 @@
+#+title: NORbert: chasing a ground bounce through the quad I/O address phase
+#+date: 2026-04-20
+#+categories[]: fpga
+#+tags[]: fpga debug
+#+images[]: 
+#+keyphrase: 
+#+description: Debugging an issue on NORbert with Quad IO and FT4222
+#+seotitle: 
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: true
+
+Found a weird bug in [[https://github.com/ArthurHeymans/NORbert][NORbert]] last week. Quad I/O reads (0xEB, the 1-4-4 mode) driven by an FT4222 would silently return 0xFF at specific SPI clock frequencies. 1-1-1, 1-1-2, 1-2-2 and 1-1-4 all worked fine. 10, 15 and 20 MHz failed; 12 and 30 MHz worked. Same data, same emulator, only the SPI clock changed.
+
+Peak "this is supposed to be the fun hobby project" energy.
+
+* The symptom
+
+Flashprog verify run at 10 MHz, quad mode:
+
+#+BEGIN_SRC text
+Verifying flash... FAILED at 0x0001fff0! Expected=0x97, Found=0xff
+#+END_SRC
+
+Same address every time. With different chunk sizes it still failed at 0x0001fff0. Switching the SPI speed from 10 to 12 MHz made it pass cleanly. Reading back the whole 16 MB showed scattered stripes of 0xFF mixed with correct data, never random corruption, always whole SDRAM bursts of 0xFF.
+
+I spent a lot of time chasing theories that turned out to be wrong. Stale =spi_activate_done= across CS boundaries. SDRAM refresh races. State encoding Hamming distance. IODELAY on the SPI clock. Resynchronising to the system clock. A shift register instead of the dynamic-index =addr[addr_count]= writes. None of it moved the failure address by a single byte.
+
+* The layout file trick
+
+I was stuck until I wrote a minimal reproducer. A flashprog layout file with a single region starting at 0x1FFF0:
+
+#+BEGIN_SRC text
+001fff0:002ffe7 test
+#+END_SRC
+
+One quad I/O transaction. 65528 bytes. All 0xFF. Then:
+
+#+BEGIN_SRC text
+001ffef:002fff6 test   # starts one byte earlier: works
+001fff1:002fff8 test   # starts one byte later:  works
+#+END_SRC
+
+0x1FFEF and 0x1FFF1 both read correct data. Only 0x1FFF0 failed. That was the clue that finally unstuck me: it had to be something about that exact address value being clocked into the chip, not anything about internal state or the SDRAM contents at that location.
+
+Writing it out in binary made it obvious:
+
+#+BEGIN_SRC text
+0x01FFEF: 0000 0001 1111 1111 1110 1111   (last nibble: 1111)
+0x01FFF0: 0000 0001 1111 1111 1111 0000   (last nibble: 0000, preceded by 1111)
+0x01FFF1: 0000 0001 1111 1111 1111 0001   (last nibble: 0001)
+#+END_SRC
+
+In 1-4-4 mode the address phase sends 4 bits per SPI clock across IO0-IO3. On the last address clock, =0x1FFF0= transitions all four IO lines simultaneously from HIGH to LOW. =0x1FFEF= and =0x1FFF1= don't. Sweeping a bunch of addresses confirmed it: exactly 4-pin simultaneous 1->0 transitions on the last address clock triggered the bug. 3 simultaneous transitions was fine. 4 simultaneous 0->1 transitions was fine. Only 4x 1->0.
+
+That's a textbook Simultaneous Switching Output (SSO) signature.
+
+* Adding tracing
+
+Theory and reproducer matched, but I still needed proof of what was happening inside the FPGA. I added one-shot log bytes at the key state transitions of the quad read path:
+
+#+BEGIN_SRC verilog
+// On CMD_QUADIOREAD decode: command byte (0xEB) already logged
+// On addr_count == 3 transition out of STA_ADDR_READ_QUAD:
+log_strobe <= 1;
+log_val <= 8'hD2;
+// On mode_count == 0 transition out of STA_MODE_MULTI:
+log_strobe <= 1;
+log_val <= 8'hD3;
+#+END_SRC
+
+Captured the UART log during both the working and failing transactions. The bytes after =0xEB= tell the whole story:
+
+#+BEGIN_SRC text
+0x1FFEF at 20 MHz: ... 35 05 EB D2 D3 C5 C5 ...   (works)
+0x1FFF0 at 20 MHz: ... 35 05 EB 7F FF ...          (fails)
+#+END_SRC
+
+In the working case both D2 and D3 fired: the state machine left the quad address phase and entered the data read phase. In the failing case neither fired. And then =0x7F= appeared, which is the format of a fresh command byte being logged by =STA_CMD= at =bit_count_in == 0=. That log format is =\{mosi_byte[7:1], spi_io0_in\}=.
+
+The state machine was somehow back in =STA_CMD=. Mid-transaction.
+
+* The math
+
+The only way to return to =STA_CMD= mid-transaction is through =reset_cs=, and =reset_cs= is set asynchronously by =posedge spi_csel=:
+
+#+BEGIN_SRC verilog
+always @(posedge spi_clk or posedge spi_csel) begin
+    if (spi_csel)
+        reset_cs <= 1;
+    else if (is_selected)
+        reset_cs <= 0;
+end
+#+END_SRC
+
+If that fired during the address phase at exactly the SSO event, and =STA_CMD= started rebuilding =mosi_byte= from IO0 bits over the next 8 clocks, what byte would it accumulate? The =reset_cs= branch initialises =mosi_byte <= \{spi_io0_in, 7'b0\}=. At the SSO clock IO0 is the last addr bit = 0 for 0x1FFF0. The next 7 clocks fill in the rest of the byte from IO0, which during the mode and dummy phase is driven HIGH (mode byte 0xFF) and then tri-stated with a pull-up (dummy and data phase).
+
+#+BEGIN_SRC text
+mosi_byte[7] = IO0 at SSO clock            = addr bit 0     = 0
+mosi_byte[6] = IO0 next clock              = mode[4]        = 1
+mosi_byte[5] = ...                         = mode[0]        = 1
+mosi_byte[4] = ...                         = dummy, pull-up = 1
+mosi_byte[3] =                                              = 1
+mosi_byte[2] =                                              = 1
+mosi_byte[1] =                                              = 1
+mosi_byte[0]/spi_io0_in at decode          = data, pull-up  = 1
+                                          -> 0b01111111      = 0x7F
+#+END_SRC
+
+Bit for bit: =0x7F=. Exactly the byte in the UART log.
+
+* The chain
+
+The PMOD connector on the dock board carries all the SPI signals on a shared ground:
+
+#+BEGIN_SRC text
+D11 - spi_clk    G11 - spi_cs    B11 - IO0 (MOSI)   C11 - IO1 (MISO)
+G10 - IO2        D10 - IO3       B10 - spi_power    C10 - spi_debug
+#+END_SRC
+
+When all four of IO0-IO3 sink current to ground simultaneously, the bond wire and PMOD header ground inductance (Ldi/dt) lifts the local ground briefly. The glitch couples across every pin sharing that return path. One of them is =spi_cs_pin=, which is idle LOW during a transaction but only needs to cross VIH for a nanosecond to fire the async =posedge spi_csel=.
+
+That's the chain:
+
+1. FT4222 drives 1111 -> 0000 on IO0-IO3 simultaneously.
+2. Shared PMOD ground bounces.
+3. =spi_cs_pin= momentarily crosses VIH on the FPGA side.
+4. =reset_cs= fires asynchronously.
+5. State machine resets to =STA_CMD= one clock later.
+6. Mode byte + dummy bits feed into =mosi_byte= as if they were a new command.
+7. Decode produces =0x7F=, no match, state stays =STA_CMD=, all subsequent reads return 0xFF because the IO output enables are never asserted.
+
+The frequency dependency fits: FT4222 clock divisors change the output drive timing enough to shift the bounce severity across the VIH threshold. 10, 15 and 20 MHz push it over; 12 and 30 MHz don't.
+
+This should really be fixed in hardware. A series termination resistor on each IO line, a dedicated ground pin near the clock and CS, or just not running signals with simultaneous transitions on the same PMOD connector. But the board exists, the Tang Primer 25K PMODs don't give you a lot of grounds, and I wanted a software fix so that anyone building NORbert on the stock dock board would have a working emulator.
+
+* The fix
+
+A 4-sample debouncer on =spi_cs_pin= in the system clock domain:
+
+#+BEGIN_SRC verilog
+reg [3:0] spi_cs_filter = 4'hF;
+reg spi_cs_debounced = 1;
+always @(posedge clk) begin
+    spi_cs_filter <= {spi_cs_filter[2:0], spi_cs_pin};
+    if (&spi_cs_filter)        spi_cs_debounced <= 1;
+    else if (~(|spi_cs_filter)) spi_cs_debounced <= 0;
+end
+wire spi_cs_in = spi_cs_debounced;
+#+END_SRC
+
+The filter requires four consecutive identical samples at 120 MHz before propagating a state change. That's ~33 ns of stable signal. SSO bounces are typically sub-nanosecond to single-digit nanoseconds, so they get rejected. Real CS edges are stable for microseconds so they pass through with only ~33 ns of added latency.
+
+=spi_trx.v= didn't need to change. Its async =reset_cs= flop now sees =spi_cs_debounced= in place of the raw pin, and the glitches are gone before they reach it.
+
+* Verification
+
+Full 16 MB verify at every supported quad SPI clock:
+
+#+BEGIN_SRC text
+10000 kHz: VERIFIED
+12000 kHz: VERIFIED
+15000 kHz: VERIFIED
+20000 kHz: VERIFIED
+30000 kHz: VERIFIED
+#+END_SRC
+
+Reading from 0x1FFF0 specifically (the address that used to always fail):
+
+#+BEGIN_SRC text
+10000 kHz @ 0x1FFF0: PASS (97867b08710e99e9)
+15000 kHz @ 0x1FFF0: PASS (97867b08710e99e9)
+20000 kHz @ 0x1FFF0: PASS (97867b08710e99e9)
+#+END_SRC
+
+Single and dual I/O modes unaffected. No regression.
+
+* Lessons
+
+The part I want to remember: I had all the data for this bug in the first hour and I still spent days on wrong theories. The address offset was frequency-independent. The chunk boundary was irrelevant. The failure was deterministic at the byte level. Every one of those facts pointed away from an SDRAM pipeline or CDC issue toward something driven by the address bits themselves. The minimal layout file forced me to look at the address in binary. That was the unlock.
+
+The other part: async reset inputs from a board-level pin are a loaded gun on any design with shared ground and fast-switching IOs. =posedge spi_csel= as an asynchronous set is convenient because the SPI clock stops between transactions and you still want CS deassertion to register, but it trusts the pin to be glitch-free. Synchronous detection with a short debounce filter buys robustness for free at the cost of a handful of flip-flops and ~33 ns of added latency, which is nothing compared to the millisecond-scale inter-transaction gaps USB SPI masters produce.
+
+The fix is committed on NORbert's [[https://github.com/ArthurHeymans/NORbert][main branch]]. If you were hitting this on specific addresses or specific frequencies, pull and rebuild.
