@@ -1,0 +1,247 @@
+#+title: NORbert: SPI bus logging and TOCTOU attacks
+#+date: 2026-04-20T20:15:13+02:00
+#+lastmod: 2026-04-20
+#+categories[]:
+#+tags[]:
+#+images[]:
+#+keyphrase:
+#+description:
+#+seotitle:
+#+seo: true
+#+math: false
+#+slider: false
+#+private: false
+#+draft: false
+
+The two things I flagged at the end of [[../norbert-ft245][the last post]] -- real-time SPI command logging and a time-of-check-time-of-use primitive -- are both landed on [[https://github.com/ArthurHeymans/NORbert][NORbert]] now. This post walks through how they work, shows the log wire format, and gives a reproducible TOCTOU demo against an FT4222H driving flashprog.
+
+* What it looks like
+
+=spi-flash-tool monitor= decodes the bus in real time:
+
+#+BEGIN_SRC
+TXN#   COMMAND            ADDRESS    INFO
+------------------------------------------------------------
+1      0x9F READ_JEDEC_ID
+2      0x05 READ_STATUS
+3      0x05 READ_STATUS
+4      0xBB DUAL_IO_READ  0x001000
+       end: 4097 bytes from 0x001000
+5      0x9F READ_JEDEC_ID
+6      0x05 READ_STATUS
+7      0x05 READ_STATUS
+8      0xBB DUAL_IO_READ  0x001000  ** DOUBLE READ (TOCTOU candidate)
+  !! TOCTOU TRAP #1 FIRED at 0x001000 -- serving replacement data
+       end: 4097 bytes from 0x001000
+#+END_SRC
+
+That's two back-to-back =flashprog= reads of the same 4 KB region. The first read arms the trap; the second read gets redirected to a completely different address in SDRAM. From flashprog's perspective the first read returned =INNOCENT-0001-= over and over and the second read returned =MALICIOUS0101-=.
+
+* Logger design: event capture, ring buffer, poll-based drain
+
+The logger lives in =src/logger.v=. It takes four event signals out of =spi_trx.v= -- all in the SPI clock domain -- and synchronizes them through 3-FF synchronizers with edge detection into the system clock domain:
+
+- =spi_log_cmd_valid= -- pulse when the command byte is decoded
+- =spi_log_addr_valid= -- pulse when the address phase completes (for reads, writes and erases in all single/dual/quad I/O modes)
+- =spi_active= -- level, follows CS (deselect edge is the transaction-end event)
+- =trap_notify_strobe= -- pulse from the TOCTOU engine in =glue.v= when a redirect fires
+
+Each event gets captured into a pending flag plus latched payload and serialized into a short binary packet in a 512-byte ring FIFO. The packet type bytes are all in the =0xA1=-=0xA4= range so they don't collide with the regular protocol ACKs (=0x00=, =0x01=, =0x02=):
+
+#+BEGIN_SRC
+0xA1 <opcode>                                  - SPI command decoded       (2 bytes)
+0xA2 <addr3> <addr2> <addr1> <addr0>           - Address phase complete    (5 bytes)
+0xA3 <count2> <count1> <count0>                - Transaction end + count   (4 bytes)
+0xA4 <index> <addr3> <addr2> <addr1> <addr0>   - TOCTOU trap fired         (6 bytes)
+#+END_SRC
+
+** Why a ring buffer and not a mux
+
+The first cut had the logger drive the UART/FT245 TX directly, with a mux in =top.v= keyed on a =log_active= flag. That immediately ran into trouble: =CMD_LOGCTL 0x01= sets =log_active<=1= and sends an ACK in the same cycle, so the mux would switch to the logger before the ACK propagated through glue's TX flip-flop. You can work around it with a one-cycle delay register, but you still end up with a protocol that is *exclusive* -- you can't issue any other command while logging is on.
+
+The current design keeps the logger completely out of the TX path. It only writes into its FIFO. Glue drains the FIFO in response to a new opcode =CMD_LOGPOLL= (=0x3A=):
+
+#+BEGIN_SRC
+host -> FPGA:  0x3A
+FPGA -> host:  <log byte 0> <log byte 1> ... <log byte N-1> 0xA0
+#+END_SRC
+
+=0xA0= is a terminator the logger itself never emits. The host reads until it sees =0xA0=. Each poll is capped at 255 data bytes so a pathological SPI master can't starve the tool inside one poll.
+
+The LOGPOLL state machine in =glue.v= runs *outside* the =spi_reset || spi_csel_buf[1]= gate that guards RAMREAD/RAMWRITE, so polls complete even while the SPI master is holding CS asserted for a long read. =CMD_LOGPOLL= is also in the =peek_is_always_safe= list, meaning an FT245 poll byte gets popped from its RX FIFO even if the serial gate is closed.
+
+The net result is that =monitor= is just a loop:
+
+#+BEGIN_SRC rust
+while running.load(Ordering::SeqCst) {
+    let data = device.log_poll()?;
+    if data.is_empty() {
+        thread::sleep(Duration::from_millis(5));
+        continue;
+    }
+    parse(&data);
+}
+#+END_SRC
+
+=log_poll()= sends =0x3A=, reads until it sees =0xA0=, returns the bytes in between. Works identically over UART (2 Mbaud) and FT245. The 512-byte FIFO absorbs the burstiness from flashprog's probe sequence (=RDID=, =RDSR=, =RDSR=, =READ=) between polls.
+
+* TOCTOU traps
+
+The trap engine sits in =glue.v= and has four entries. Each entry is three 24-bit byte addresses:
+
+- =trap_start= -- the match value
+- =trap_mask= -- 1-bits must match, 0-bits are don't-care
+- =trap_replace= -- the replacement address base
+
+On every =log_addr_valid= pulse, glue compares the read address against all four armed entries:
+
+#+BEGIN_SRC verilog
+if (trap_armed[i] &&
+    ((log_addr_sync & trap_mask[i]) == (trap_start[i] & trap_mask[i]))) begin
+    if (!trap_triggered[i]) begin
+        // First match: mark triggered, serve original data
+        trap_triggered[i] <= 1;
+    end
+    else begin
+        // Second+ match: activate address redirect
+        redirect_active <= 1;
+        redirect_mask   <= trap_mask[i][23:3];
+        redirect_base   <= trap_replace[i][23:3];
+        trap_notify_strobe <= 1;
+        trap_notify_index  <= i[1:0];
+        trap_notify_addr   <= log_addr_sync;
+    end
+end
+#+END_SRC
+
+The redirect is a combinational mux on the SDRAM burst address in =top.v=:
+
+#+BEGIN_SRC verilog
+wire [22:0] spi_ram_addr_final = redirect_active ?
+    ((redirect_base & redirect_mask) | (spi_ram_addr & ~redirect_mask)) :
+    spi_ram_addr;
+#+END_SRC
+
+=redirect_active= is cleared when CS deasserts, so the trap only affects the current SPI transaction. Nothing about the SDRAM contents changes -- it's purely an address rewrite on the fast path between =spi_trx= and the SDRAM controller.
+
+** The 8-byte quirk
+
+The first 8 bytes of a redirected read come from the /original/ address, not the replacement. This is baked in: the SDRAM prefetch pipeline in =spi_trx= fires =ram_activate= + =ram_read= during the address phase, /before/ =log_addr_valid= pulses and the trap check can complete. By the time the redirect engages, the first 8-byte burst is already in flight. Every burst after the first comes from the replacement.
+
+In practice this means byte 0-7 of the attack-path read look like the verify image and byte 8+ look like the attack image. If you care, you can work around it by making your replacement overlap the first 8 bytes of the original, or by triggering the trap on a preceding read at a different address.
+
+** TOCTOU sub-protocol
+
+=CMD_TOCTOU= (=0x39=) has five sub-commands:
+
+#+BEGIN_SRC
+0x01 SET index start_hi start_mid start_lo mask_hi mask_mid mask_lo \
+         replace_hi replace_mid replace_lo     -- configure a trap entry
+0x02 ARM index                                 -- start monitoring
+0x03 DISARM index                              -- stop monitoring
+0x04 RESET index                               -- clear triggered flag
+0x05 RESET_ALL                                 -- disarm + clear all four
+#+END_SRC
+
+All reply with =0x01= ACK. These go through the same protocol path as RAMREAD/RAMWRITE so they work over either UART or FT245.
+
+* Reproducing the demo
+
+Hardware: a Tang Primer 25K with dock (for NORbert), plus an FT4222H as the SPI master for flashprog. The FT4222H's SPI pins go to NORbert's PMOD J5 (CS/CLK/IO0-3). You could equally well use a standalone FT2232H with =-p ft2232_spi:type=2232H= or any other flashprog-supported SPI master -- it's just what I had hooked up.
+
+** Build and program NORbert
+
+#+BEGIN_SRC shell
+git clone https://github.com/ArthurHeymans/NORbert
+cd NORbert
+nix develop          # or set up Gowin IDE, openFPGALoader, rustc by hand
+make build
+make prog            # volatile, or `make flash` for persistent
+make tool
+#+END_SRC
+
+** Generate a test image
+
+The image has two visually distinct halves. Sectors =0x000=-=0x0FF= (first 1 MB) are filled with =INNOCENT-SSSS-= and sectors =0x100=-=0x1FF= with =MALICIOUS0SSSS-=, padded to 8 MB with more innocent data:
+
+#+BEGIN_SRC python
+python3 -c "
+img = bytearray(b'\xff' * 0x800000)
+for sector in range(0x800):
+    region = 'MALICIOUS' if 0x100 <= sector < 0x200 else 'INNOCENT-'
+    pattern = f'{region}{sector:04X}-'
+    img[sector*0x1000 : (sector+1)*0x1000] = \
+        (pattern.encode() * (0x1000 // len(pattern) + 1))[:0x1000]
+open('image.bin', 'wb').write(img)
+"
+#+END_SRC
+
+Layout file for flashprog so we can isolate one 4 KB region per read:
+
+#+BEGIN_SRC
+00000000:00000fff bootblock
+00001000:00001fff region1
+00100000:00100fff evil_bootblock
+#+END_SRC
+
+** Load and configure
+
+#+BEGIN_SRC shell
+PORT="-p /dev/ttyUSB1"          # Sipeed dock's UART channel
+TOOL="./tool/target/release/spi-flash-tool"
+
+$TOOL $PORT version              # should print "Protocol version: 4"
+$TOOL $PORT load image.bin       # loads + starts emulation
+
+# Trap 1: any read where addr[23:12] == 0x001 redirects to 0x101xxx.
+# The low 12 bits are preserved, the high 12 are forced to 0x101.
+$TOOL $PORT toctou set 1 0x001000 0xFFF000 0x101000
+$TOOL $PORT toctou arm 1
+#+END_SRC
+
+** Run the attack
+
+Start the monitor in one shell:
+
+#+BEGIN_SRC shell
+$TOOL $PORT monitor
+#+END_SRC
+
+In another shell, do two reads of =region1= with flashprog:
+
+#+BEGIN_SRC shell
+flashprog -p ft4222_spi -c "W25Q64BV/W25Q64CV/W25Q64FV" \
+    -l layout.txt -i region1 -r read1.bin
+flashprog -p ft4222_spi -c "W25Q64BV/W25Q64CV/W25Q64FV" \
+    -l layout.txt -i region1 -r read2.bin
+#+END_SRC
+
+Inspect the 4 KB window inside each 8 MB output:
+
+#+BEGIN_SRC shell
+$ dd if=read1.bin bs=1 count=48 skip=4096 2>/dev/null; echo
+INNOCENT-0001-INNOCENT-0001-INNOCENT-0001-INNOCE
+$ dd if=read2.bin bs=1 count=48 skip=4096 2>/dev/null; echo
+INNOCENTS0101-MALICIOUS0101-MALICIOUS0101-MALICI
+#+END_SRC
+
+The first 8 bytes of =read2.bin= (=INNOCENTS=) are the pre-fetched burst from =0x001000=; from byte 8 onward you see =0101-MALICIOUS0101-= which is the content at =0x101008=. The monitor window shows the matching =!! TOCTOU TRAP #1 FIRED= notification on the second transaction.
+
+** Teardown
+
+#+BEGIN_SRC shell
+$TOOL $PORT toctou reset-all
+$TOOL $PORT stop
+#+END_SRC
+
+* What this is good for
+
+Mostly: characterizing a target SoC's boot ROM / bootloader. If you see the boot ROM read the same image twice, the trap primitive tells you whether there's a verify-then-use window you can exploit. If you see a single read, you know the target assumes flash is stable and TOCTOU isn't interesting on that code path. Either way, the logger gives you the sequence of commands, the addresses, and the byte counts to correlate against the ROM's behavior.
+
+It also works as a cheap bus analyzer. The packet format is small enough that you can stream it at full FT245 rate if needed, and the =0xA1=/=0xA2=/=0xA3= packets give you transaction boundaries for free. For now I'm polling at ~200 Hz over UART, which is plenty for flashprog but would be the bottleneck for a live boot trace -- that's what the FT245 path is for.
+
+The trap engine has four independent entries so you can chain triggers, e.g. arm trap 0 on a config-block read and trap 1 on the boot image, and only flip the boot image once the config probe has happened. The on-chip logic is tiny; adding more entries is just a few LUTs per slot.
+
+* Source
+
+Everything is on GitHub: [[https://github.com/ArthurHeymans/NORbert][NORbert]]. The relevant files for this post are =src/logger.v=, =src/glue.v= (trap engine, LOGPOLL state machine), =src/top.v= (address redirect mux), and the =monitor= + =toctou= subcommands in =tool/src/main.rs=.
