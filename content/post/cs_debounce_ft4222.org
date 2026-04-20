@@ -10,7 +10,7 @@
 #+math: false
 #+slider: false
 #+private: false
-#+draft: true
+#+draft: false
 
 Found a weird bug in [[https://github.com/ArthurHeymans/NORbert][NORbert]] last week. Quad I/O reads (0xEB, the 1-4-4 mode) driven by an FT4222 would silently return 0xFF at specific SPI clock frequencies. 1-1-1, 1-1-2, 1-2-2 and 1-1-4 all worked fine. 10, 15 and 20 MHz failed; 12 and 30 MHz worked. Same data, same emulator, only the SPI clock changed.
 
